@@ -29,6 +29,7 @@ import webbrowser
 from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 VERSION = "1.1.0"
@@ -155,7 +156,7 @@ def consultar_actualizacion(forzar=False):
     if not forzar and _cache_update["data"] and ahora - _cache_update["t"] < 3600:
         return _cache_update["data"]
     res = {"version_actual": VERSION, "version_nueva": None, "hay_actualizacion": False,
-           "url": "", "url_descarga": "", "notas": "", "sin_conexion": False}
+           "url": "", "url_descarga": "", "notas": "", "sin_conexion": False, "aviso": ""}
     try:
         req = Request("https://api.github.com/repos/%s/releases/latest" % REPO,
                       headers={"Accept": "application/vnd.github+json", "User-Agent": "GymAdmin"})
@@ -169,6 +170,12 @@ def consultar_actualizacion(forzar=False):
             if (a.get("name") or "").lower().endswith(".exe"):
                 res["url_descarga"] = a.get("browser_download_url") or ""
         res["hay_actualizacion"] = version_tupla(tag) > version_tupla(VERSION)
+    except HTTPError as e:
+        # 404: repositorio privado o todavía sin versiones publicadas
+        if e.code == 404:
+            res["aviso"] = "No se encontraron versiones publicadas (revisá que el repositorio sea público y que haya al menos una versión en Releases)."
+        else:
+            res["aviso"] = "GitHub respondió con un error (%s)." % e.code
     except Exception:
         res["sin_conexion"] = True
     _cache_update["t"] = ahora

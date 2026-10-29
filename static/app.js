@@ -939,6 +939,7 @@ VISTAS.ajustes = async (cont) => {
   const pintarUpdate = (u) => {
     if (!estado) return;
     if (u.sin_conexion) estado.innerHTML = `<span class="sec">No se pudo consultar (sin internet). Volvé a intentar más tarde.</span>`;
+    else if (u.aviso) estado.innerHTML = `<span class="sec">${esc(u.aviso)}</span>`;
     else if (u.hay_actualizacion) estado.innerHTML = `<span style="color:var(--acento-oscuro);font-weight:600">Hay una versión nueva: v${esc(u.version_nueva)}.</span> <a href="${esc(u.url_descarga || u.url)}" target="_blank" rel="noopener">Descargar</a>`;
     else estado.innerHTML = `<span style="color:var(--ok)">Estás usando la última versión.</span>`;
   };
