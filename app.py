@@ -32,7 +32,7 @@ from urllib.parse import parse_qs, urlparse
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-VERSION = "1.1.0"
+VERSION = "1.1.2"
 
 # Repositorio donde se publican las versiones (para el aviso de actualizaciones).
 REPO = "cvulcano/GymAdmin"
@@ -157,23 +157,26 @@ def consultar_actualizacion(forzar=False):
         return _cache_update["data"]
     res = {"version_actual": VERSION, "version_nueva": None, "hay_actualizacion": False,
            "url": "", "url_descarga": "", "notas": "", "sin_conexion": False, "aviso": ""}
+    # Se consulta github.com (no api.github.com): "releases/latest" redirige a
+    # "releases/tag/vX.Y.Z". Así usa el mismo sitio desde donde se descarga el .exe,
+    # que muchas redes dejan pasar aunque bloqueen api.github.com, y sin límite de uso.
     try:
-        req = Request("https://api.github.com/repos/%s/releases/latest" % REPO,
-                      headers={"Accept": "application/vnd.github+json", "User-Agent": "GymAdmin"})
-        with urlopen(req, timeout=5) as r:
-            data = json.loads(r.read().decode("utf-8"))
-        tag = data.get("tag_name") or ""
-        res["version_nueva"] = tag.lstrip("vV")
-        res["url"] = data.get("html_url") or ("https://github.com/%s/releases" % REPO)
-        res["notas"] = (data.get("body") or "").strip()[:600]
-        for a in data.get("assets", []):
-            if (a.get("name") or "").lower().endswith(".exe"):
-                res["url_descarga"] = a.get("browser_download_url") or ""
-        res["hay_actualizacion"] = version_tupla(tag) > version_tupla(VERSION)
+        req = Request("https://github.com/%s/releases/latest" % REPO,
+                      headers={"User-Agent": "GymAdmin", "Accept": "text/html"})
+        with urlopen(req, timeout=6) as r:
+            final = r.geturl() or ""
+        marcador = "/releases/tag/"
+        if marcador in final:
+            tag = final.split(marcador, 1)[1].strip("/").split("/")[0]
+            res["version_nueva"] = tag.lstrip("vV")
+            res["url"] = "https://github.com/%s/releases/latest" % REPO
+            res["url_descarga"] = "https://github.com/%s/releases/download/%s/GymAdmin.exe" % (REPO, tag)
+            res["hay_actualizacion"] = version_tupla(tag) > version_tupla(VERSION)
+        else:
+            res["aviso"] = "Todavía no hay versiones publicadas en el repositorio."
     except HTTPError as e:
-        # 404: repositorio privado o todavía sin versiones publicadas
         if e.code == 404:
-            res["aviso"] = "No se encontraron versiones publicadas (revisá que el repositorio sea público y que haya al menos una versión en Releases)."
+            res["aviso"] = "No se encontró el repositorio (revisá que sea público y que tenga al menos una versión publicada)."
         else:
             res["aviso"] = "GitHub respondió con un error (%s)." % e.code
     except Exception:
