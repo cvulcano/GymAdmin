@@ -1,0 +1,39 @@
+name: Compilar ejecutable de Windows
+
+# Se puede lanzar a mano desde la pestaña "Actions",
+# y se lanza solo cuando creás una etiqueta de versión (ej.: v1.0.0).
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  construir:
+    runs-on: windows-latest
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Instalar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar PyInstaller
+        run: pip install pyinstaller
+
+      - name: Generar GymAdmin.exe
+        run: pyinstaller --noconfirm --onefile --name GymAdmin --add-data "static;static" app.py
+
+      - name: Guardar el ejecutable como artefacto descargable
+        uses: actions/upload-artifact@v4
+        with:
+          name: GymAdmin-Windows
+          path: dist/GymAdmin.exe
+
+      - name: Publicar en Releases (solo al crear una etiqueta vX.Y.Z)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/GymAdmin.exe
