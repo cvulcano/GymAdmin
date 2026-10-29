@@ -1,0 +1,17 @@
+# Datos del gimnasio (contienen información de clientes: NO subir)
+datos/
+*.db
+*.db-journal
+
+# Python
+__pycache__/
+*.pyc
+
+# Empaquetado (PyInstaller)
+build/
+dist/
+*.spec
+
+# Sistema
+.DS_Store
+Thumbs.db

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GymAdmin</title>
+  <link rel="icon" href="icono.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="estilos.css">
+</head>
+<body>
+  <aside class="sidebar" id="sidebar">
+    <div class="marca">
+      <img src="icono.svg" alt="" width="34" height="34">
+      <div>
+        <div class="marca-nombre" id="nombreGimnasio">Mi Gimnasio</div>
+        <div class="marca-sub">GymAdmin</div>
+      </div>
+    </div>
+    <nav id="menu">
+      <a href="#inicio" data-vista="inicio"><i data-i="inicio"></i>Inicio</a>
+      <a href="#asistencia" data-vista="asistencia"><i data-i="check"></i>Ingreso a sala</a>
+      <a href="#clientes" data-vista="clientes"><i data-i="clientes"></i>Clientes</a>
+      <a href="#contabilidad" data-vista="contabilidad"><i data-i="caja"></i>Contabilidad</a>
+      <a href="#planes" data-vista="planes"><i data-i="planes"></i>Planes y precios</a>
+      <a href="#ajustes" data-vista="ajustes"><i data-i="ajustes"></i>Ajustes</a>
+    </nav>
+    <button class="btn btn-primario btn-bloque" id="btnCobrarMenu"><i data-i="mas"></i>Cobrar cuota</button>
+    <div class="sidebar-pie" id="fechaHoy"></div>
+  </aside>
+
+  <main class="contenido" id="contenido"></main>
+
+  <div class="modal-fondo" id="modalFondo" hidden>
+    <div class="modal" role="dialog" aria-modal="true" id="modal"></div>
+  </div>
+  <div class="toasts" id="toasts"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
