@@ -11,6 +11,8 @@ on:
 jobs:
   construir:
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
       - name: Descargar el código
         uses: actions/checkout@v4
