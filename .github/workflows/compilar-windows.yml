@@ -26,7 +26,7 @@ jobs:
         run: pip install pyinstaller
 
       - name: Generar GymAdmin.exe
-        run: pyinstaller --noconfirm --onefile --name GymAdmin --add-data "static;static" app.py
+        run: pyinstaller --noconfirm --onefile --name GymAdmin --add-data "static;static" --noconsole app.py
 
       - name: Guardar el ejecutable como artefacto descargable
         uses: actions/upload-artifact@v4

@@ -24,12 +24,23 @@ import socket
 import sqlite3
 import sys
 import threading
+import time
 import webbrowser
 from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
+from urllib.request import Request, urlopen
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
+
+# Repositorio donde se publican las versiones (para el aviso de actualizaciones).
+REPO = "cvulcano/GymAdmin"
+
+# En modo "sin consola" (ejecutable de Windows) no hay salida estándar: evitá que print falle.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w")
 
 # ---------------------------------------------------------------------------
 # Rutas (compatibles con ejecución normal y con ejecutable de PyInstaller)
@@ -118,6 +129,51 @@ CREATE TABLE IF NOT EXISTS asistencias (
 );
 CREATE INDEX IF NOT EXISTS idx_asist_fecha ON asistencias(fecha);
 """
+
+
+# ---------------------------------------------------------------------------
+# Aviso de actualizaciones (consulta la última versión publicada en GitHub)
+# ---------------------------------------------------------------------------
+_cache_update = {"t": 0.0, "data": None}
+
+
+def version_tupla(s):
+    partes = []
+    for parte in str(s or "").lstrip("vV").split("."):
+        num = ""
+        for ch in parte:
+            if ch.isdigit():
+                num += ch
+            else:
+                break
+        partes.append(int(num) if num else 0)
+    return tuple(partes) or (0,)
+
+
+def consultar_actualizacion(forzar=False):
+    ahora = time.time()
+    if not forzar and _cache_update["data"] and ahora - _cache_update["t"] < 3600:
+        return _cache_update["data"]
+    res = {"version_actual": VERSION, "version_nueva": None, "hay_actualizacion": False,
+           "url": "", "url_descarga": "", "notas": "", "sin_conexion": False}
+    try:
+        req = Request("https://api.github.com/repos/%s/releases/latest" % REPO,
+                      headers={"Accept": "application/vnd.github+json", "User-Agent": "GymAdmin"})
+        with urlopen(req, timeout=5) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        tag = data.get("tag_name") or ""
+        res["version_nueva"] = tag.lstrip("vV")
+        res["url"] = data.get("html_url") or ("https://github.com/%s/releases" % REPO)
+        res["notas"] = (data.get("body") or "").strip()[:600]
+        for a in data.get("assets", []):
+            if (a.get("name") or "").lower().endswith(".exe"):
+                res["url_descarga"] = a.get("browser_download_url") or ""
+        res["hay_actualizacion"] = version_tupla(tag) > version_tupla(VERSION)
+    except Exception:
+        res["sin_conexion"] = True
+    _cache_update["t"] = ahora
+    _cache_update["data"] = res
+    return res
 
 
 class ErrorUsuario(Exception):
@@ -804,6 +860,7 @@ RUTAS = [
     ("GET", r"^/api/config$", api_config_get),
     ("PUT", r"^/api/config$", api_config_put),
     ("GET", r"^/api/dashboard$", api_dashboard),
+    ("GET", r"^/api/actualizacion$", lambda con, q, b: consultar_actualizacion(q.get("forzar") == "1")),
     ("GET", r"^/api/clientes$", api_clientes_list),
     ("POST", r"^/api/clientes$", api_clientes_post),
     ("GET", r"^/api/clientes/(\d+)$", lambda con, q, b, i: api_cliente_get(con, int(i))),
@@ -857,7 +914,10 @@ class Manejador(BaseHTTPRequestHandler):
             completa = os.path.join(STATIC_DIR, "index.html")
         with open(completa, "rb") as f:
             datos = f.read()
-        self._enviar(200, datos, TIPOS.get(os.path.splitext(completa)[1], "application/octet-stream"))
+        tipo = TIPOS.get(os.path.splitext(completa)[1], "application/octet-stream")
+        # Fuerza el motor moderno en Edge/Internet Explorer (127.0.0.1 es "intranet")
+        extra = {"X-UA-Compatible": "IE=edge"} if tipo.startswith("text/html") else None
+        self._enviar(200, datos, tipo, extra)
 
     def _descarga(self, nombre, datos, tipo):
         self._enviar(200, datos, tipo, {"Content-Disposition": 'attachment; filename="%s"' % nombre})
@@ -878,6 +938,11 @@ class Manejador(BaseHTTPRequestHandler):
             with DB_LOCK:
                 con = conectar()
                 try:
+                    if metodo == "POST" and ruta == "/api/salir":
+                        self._json(200, {"ok": True})
+                        print("GymAdmin: cerrado desde la aplicación.")
+                        threading.Timer(0.4, lambda: os._exit(0)).start()
+                        return
                     if metodo == "GET" and ruta == "/api/exportar/clientes.csv":
                         return self._descarga("clientes-%s.csv" % hoy().isoformat(), export_clientes(con, q),
                                               "text/csv; charset=utf-8")
@@ -938,6 +1003,17 @@ def puerto_libre(host, preferido):
     raise SystemExit("No se encontró un puerto libre.")
 
 
+def ya_corriendo(puerto):
+    """Devuelve True si en ese puerto ya responde una instancia de GymAdmin."""
+    try:
+        req = Request("http://127.0.0.1:%d/api/config" % puerto, headers={"User-Agent": "GymAdmin"})
+        with urlopen(req, timeout=1.5) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        return bool(data.get("version"))
+    except Exception:
+        return False
+
+
 def ip_local():
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -955,6 +1031,15 @@ def main():
     ap.add_argument("--red", action="store_true", help="permitir acceso desde otros equipos de la red local")
     ap.add_argument("--sin-navegador", action="store_true", help="no abrir el navegador automáticamente")
     args = ap.parse_args()
+
+    # Si ya hay una instancia abierta en el puerto preferido, solo abrir el navegador y salir
+    # (evita dejar copias corriendo cuando se hace doble clic varias veces).
+    if not args.red and ya_corriendo(args.puerto):
+        url = "http://127.0.0.1:%d/" % args.puerto
+        print("GymAdmin ya estaba abierto. Abriendo %s" % url)
+        if not args.sin_navegador:
+            webbrowser.open(url)
+        return
 
     inicializar_db()
     host = "0.0.0.0" if args.red else "127.0.0.1"

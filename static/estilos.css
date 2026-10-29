@@ -57,7 +57,12 @@ svg.i { width: 18px; height: 18px; flex: none; stroke: currentColor; fill: none;
 }
 #menu a:hover { background: var(--tinta-2); color: #fff; }
 #menu a.activo { background: #2B2D34; color: #fff; box-shadow: inset 3px 0 0 var(--acento); }
+.aviso-update { display: block; margin-top: 14px; padding: 11px 13px; border-radius: 9px; background: #2B2D34; border: 1px solid #3A3D45; color: #fff; text-decoration: none; font-size: 13px; line-height: 1.35; }
+.aviso-update:hover { border-color: var(--acento); }
+.aviso-update b { display: block; color: #FFD9CB; margin-bottom: 2px; }
+.aviso-update small { color: #A9ABB3; }
 .sidebar-pie { margin-top: auto; font-size: 12px; color: #8E9098; padding: 0 6px; }
+.aviso-update + .sidebar-pie { margin-top: 12px; }
 .sidebar-pie::first-letter { text-transform: uppercase; }
 
 /* ---------- Contenido ---------- */

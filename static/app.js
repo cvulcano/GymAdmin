@@ -123,11 +123,13 @@ function toast(msj, tipo = "") {
   setTimeout(() => t.remove(), tipo === "error" ? 6000 : 3500);
 }
 
-function debounce(fn, ms = 250) {
+function debounce(fn, ms) {
+  ms = ms || 250;
   let t;
-  return (...a) => {
+  return function () {
+    const args = arguments, self = this;
     clearTimeout(t);
-    t = setTimeout(() => fn(...a), ms);
+    t = setTimeout(function () { fn.apply(self, args); }, ms);
   };
 }
 
@@ -217,12 +219,29 @@ async function cargarBase() {
 // Recarga la vista actual (después de guardar algo)
 const refrescar = () => render();
 
+// Aviso de actualización en el menú lateral
+function mostrarAvisoUpdate(u) {
+  const el = $("#avisoUpdate");
+  if (!el) return;
+  if (u && u.hay_actualizacion) {
+    el.innerHTML = `<b>Actualización disponible</b><small>Versión v${esc(u.version_nueva)} — tocá para descargar</small>`;
+    el.href = u.url_descarga || u.url || "#";
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+}
+async function comprobarActualizacion() {
+  try { mostrarAvisoUpdate(await api("GET", "/api/actualizacion")); } catch (e) { /* sin conexión: no molestar */ }
+}
+
 // ---------------------------------------------------------------------------
 // Gráfico de barras ingresos/egresos
 // ---------------------------------------------------------------------------
 function graficoBarras(serie) {
   const W = 640, H = 220, mi = 54, mb = 26, mt = 10;
-  const max = Math.max(1, ...serie.flatMap((s) => [s.ingresos, s.egresos]));
+  let max = 1;
+  serie.forEach((s) => { max = Math.max(max, s.ingresos, s.egresos); });
   const paso = niceMax(max);
   const ancho = (W - mi - 8) / serie.length;
   const bw = Math.min(22, ancho / 3);
@@ -450,7 +469,7 @@ function opcionesPlanes(seleccionado, incluirVacio = true) {
 }
 
 function formCliente(cliente = null, inicial = {}) {
-  const c = cliente || { fecha_alta: hoyISO(), ...inicial };
+  const c = cliente || Object.assign({ fecha_alta: hoyISO() }, inicial);
   const v = (k) => esc(c[k] || "");
   const m = abrirModal(`${cabModal(cliente ? "Editar cliente" : "Nuevo cliente")}
     <form id="fCli"><div class="modal-cuerpo"><div class="form-grilla">
@@ -727,7 +746,9 @@ VISTAS.contabilidad = async (cont) => {
   estadoConta.desde = desde; estadoConta.hasta = hasta;
   const qs = new URLSearchParams({ desde, hasta, tipo: estadoConta.tipo, categoria: estadoConta.categoria }).toString();
   const d = await api("GET", `/api/movimientos?${qs}`);
-  const cats = [...new Set([...CONFIG.categorias_ingreso, ...CONFIG.categorias_egreso, ...d.por_categoria.map((x) => x.categoria)])];
+  const cats = [];
+  CONFIG.categorias_ingreso.concat(CONFIG.categorias_egreso, d.por_categoria.map((x) => x.categoria))
+    .forEach((c) => { if (c && cats.indexOf(c) < 0) cats.push(c); });
   cont.innerHTML = `
     <div class="encabezado"><div><h1>Contabilidad</h1><p>Ingresos y gastos del gimnasio. Los cobros de cuotas se cargan solos.</p></div>
       <div class="acciones"><a class="btn" href="/api/exportar/movimientos.csv?${qs}">${ico("descargar")}Exportar a Excel</a>
@@ -821,7 +842,7 @@ function formMovimiento(tipo = "egreso", mov = null) {
   setTipo(t);
   $("#fMov", m).addEventListener("submit", async (e) => {
     e.preventDefault();
-    const datos = { ...leerForm(e.target), tipo: t };
+    const datos = Object.assign(leerForm(e.target), { tipo: t });
     try {
       if (mov) await api("PUT", `/api/movimientos/${mov.id}`, datos);
       else await api("POST", "/api/movimientos", datos);
@@ -906,9 +927,32 @@ VISTAS.ajustes = async (cont) => {
       <div class="tarjeta"><div class="tarjeta-cab"><h2>Categorías de ingresos</h2></div><div class="tarjeta-cuerpo"><textarea name="categorias_ingreso" rows="6">${esc(CONFIG.categorias_ingreso.join("\n"))}</textarea><span class="ayuda">Una por línea.</span></div></div>
       <div class="tarjeta"><div class="tarjeta-cab"><h2>Categorías de gastos</h2></div><div class="tarjeta-cuerpo"><textarea name="categorias_egreso" rows="6">${esc(CONFIG.categorias_egreso.join("\n"))}</textarea><span class="ayuda">Una por línea.</span></div></div>
       <div class="tarjeta"><div class="tarjeta-cab"><h2>Medios de pago</h2></div><div class="tarjeta-cuerpo"><textarea name="medios_pago" rows="5">${esc(CONFIG.medios_pago.join("\n"))}</textarea><span class="ayuda">Una por línea. “Efectivo” se usa para calcular la caja.</span></div></div>
-      <div class="tarjeta"><div class="tarjeta-cab"><h2>Acerca de</h2></div><div class="tarjeta-cuerpo" style="font-size:14px;color:var(--texto-2)">GymAdmin versión ${esc(CONFIG.version)}.<br>Para usarlo desde otra PC o tablet del gimnasio, iniciá la aplicación con la opción <code>--red</code> (ver archivo LEEME).</div></div>
+      <div class="tarjeta"><div class="tarjeta-cab"><h2>Acerca de y mantenimiento</h2></div><div class="tarjeta-cuerpo" style="font-size:14px;color:var(--texto-2);display:grid;gap:12px">
+        <div>GymAdmin versión <b>${esc(CONFIG.version)}</b>.<br>Para usarlo desde otra PC o tablet del gimnasio, iniciá con la opción <code>--red</code> (ver README).</div>
+        <div id="estadoUpdate" class="sec"></div>
+        <div class="acciones"><button type="button" class="btn" id="btnBuscarUpdate">${ico("descargar")}Buscar actualizaciones</button>
+          <button type="button" class="btn btn-peligro" id="btnSalir">Cerrar la aplicación</button></div>
+      </div></div>
     </div>
     <div style="position:sticky;bottom:0;padding:14px 0;background:linear-gradient(transparent,var(--fondo) 30%);display:flex;justify-content:flex-end"><button class="btn btn-primario" type="submit">Guardar ajustes</button></div></form>`;
+  const estado = $("#estadoUpdate");
+  const pintarUpdate = (u) => {
+    if (!estado) return;
+    if (u.sin_conexion) estado.innerHTML = `<span class="sec">No se pudo consultar (sin internet). Volvé a intentar más tarde.</span>`;
+    else if (u.hay_actualizacion) estado.innerHTML = `<span style="color:var(--acento-oscuro);font-weight:600">Hay una versión nueva: v${esc(u.version_nueva)}.</span> <a href="${esc(u.url_descarga || u.url)}" target="_blank" rel="noopener">Descargar</a>`;
+    else estado.innerHTML = `<span style="color:var(--ok)">Estás usando la última versión.</span>`;
+  };
+  $("#btnBuscarUpdate").onclick = async () => {
+    estado.textContent = "Buscando…";
+    try { const u = await api("GET", "/api/actualizacion?forzar=1"); pintarUpdate(u); mostrarAvisoUpdate(u); }
+    catch (e) { estado.textContent = e.message; }
+  };
+  $("#btnSalir").onclick = async () => {
+    if (!(await confirmar("Cerrar la aplicación", "Se va a cerrar GymAdmin. Para volver a usarlo, abrilo de nuevo desde el ícono. ¿Cerrar ahora?", "Cerrar", true))) return;
+    try { await api("POST", "/api/salir", {}); } catch (e) {}
+    document.body.innerHTML = `<div style="font-family:var(--fuente);display:grid;place-items:center;height:100vh;text-align:center;color:#5E6068"><div><h1 style="color:#1C1D21">GymAdmin cerrado</h1><p>Ya podés cerrar esta pestaña del navegador.</p></div></div>`;
+  };
+
   $("#fAjustes").addEventListener("submit", async (e) => {
     e.preventDefault();
     const d = leerForm(e.target);
@@ -937,4 +981,5 @@ VISTAS.ajustes = async (cont) => {
     return;
   }
   render();
+  comprobarActualizacion();
 })();

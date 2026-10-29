@@ -60,3 +60,16 @@ static/             interfaz (HTML, CSS, JavaScript)
 datos/              base de datos SQLite y copias (se crea al iniciar)
 iniciar.sh / .bat   lanzadores
 ```
+
+## Cerrar la aplicación
+
+El ejecutable de Windows corre **sin ventana de consola**. Para cerrarlo, entrá a
+**Ajustes → Cerrar la aplicación**. (Volver a hacer doble clic en el ícono cuando ya está
+abierto solo reabre el navegador, no deja copias corriendo.)
+
+## Aviso de actualizaciones
+
+La app consulta la última versión publicada en GitHub (`Releases`) y, si hay una más nueva,
+muestra un aviso en el menú con el enlace para descargarla, y también en **Ajustes → Buscar actualizaciones**.
+Para publicar una versión nueva: subí los cambios, **actualizá el número `VERSION` en `app.py`** para que
+coincida con la etiqueta, y creá la etiqueta (`git tag vX.Y.Z` + `git push origin vX.Y.Z`). GitHub compila y publica el `.exe` solo.
