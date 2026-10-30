@@ -18,9 +18,20 @@ try:
 except ImportError:
     print("Instalando PyInstaller...")
     subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "pyinstaller"])
+try:
+    import certifi  # noqa: F401  (certificados actualizados para la conexión con GitHub)
+except ImportError:
+    print("Instalando certifi...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "certifi"])
 
 sep = ";" if os.name == "nt" else ":"
-subprocess.check_call([sys.executable, "-m", "PyInstaller", "--noconfirm", "--onefile", "--name", "GymAdmin",
-                       "--add-data", "static%sstatic" % sep, "app.py"])
+cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--onefile", "--name", "GymAdmin",
+       "--add-data", "static%sstatic" % sep]
+if os.name == "nt":
+    cmd.append("--noconsole")  # en Windows, sin ventana de consola
+    if os.path.exists("static/icono.ico"):
+        cmd += ["--icon", "static/icono.ico"]
+cmd.append("app.py")
+subprocess.check_call(cmd)
 print("\nListo. El ejecutable está en la carpeta 'dist'. Copialo a la carpeta donde quieras guardar los datos;")
 print("la base de datos se creará en una subcarpeta 'datos' al lado del ejecutable.")

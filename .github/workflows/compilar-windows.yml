@@ -23,7 +23,7 @@ jobs:
           python-version: '3.12'
 
       - name: Instalar PyInstaller
-        run: pip install pyinstaller
+        run: pip install pyinstaller certifi
 
       - name: Generar GymAdmin.exe
         run: pyinstaller --noconfirm --onefile --name GymAdmin --add-data "static;static" --noconsole app.py

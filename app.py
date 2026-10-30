@@ -22,6 +22,7 @@ import re
 import shutil
 import socket
 import sqlite3
+import ssl
 import sys
 import threading
 import time
@@ -32,10 +33,19 @@ from urllib.parse import parse_qs, urlparse
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-VERSION = "1.1.2"
+VERSION = "1.1.3"
 
 # Repositorio donde se publican las versiones (para el aviso de actualizaciones).
 REPO = "cvulcano/GymAdmin"
+
+# Contexto HTTPS con certificados propios y actualizados (certifi). Así la verificación
+# no depende de los certificados raíz de Windows, que en equipos viejos/sin actualizar
+# están desactualizados y hacen fallar la conexión segura con GitHub.
+try:
+    import certifi
+    SSL_CTX = ssl.create_default_context(cafile=certifi.where())
+except Exception:
+    SSL_CTX = ssl.create_default_context()
 
 # En modo "sin consola" (ejecutable de Windows) no hay salida estándar: evitá que print falle.
 if sys.stdout is None:
@@ -163,7 +173,7 @@ def consultar_actualizacion(forzar=False):
     try:
         req = Request("https://github.com/%s/releases/latest" % REPO,
                       headers={"User-Agent": "GymAdmin", "Accept": "text/html"})
-        with urlopen(req, timeout=6) as r:
+        with urlopen(req, timeout=6, context=SSL_CTX) as r:
             final = r.geturl() or ""
         marcador = "/releases/tag/"
         if marcador in final:
@@ -179,6 +189,9 @@ def consultar_actualizacion(forzar=False):
             res["aviso"] = "No se encontró el repositorio (revisá que sea público y que tenga al menos una versión publicada)."
         else:
             res["aviso"] = "GitHub respondió con un error (%s)." % e.code
+    except ssl.SSLError:
+        res["aviso"] = ("No se pudo verificar la conexión segura con GitHub. "
+                        "Suele pasar en equipos con Windows desactualizado; conviene instalar las actualizaciones de Windows.")
     except Exception:
         res["sin_conexion"] = True
     _cache_update["t"] = ahora
