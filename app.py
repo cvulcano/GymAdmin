@@ -33,7 +33,7 @@ from urllib.parse import parse_qs, urlparse
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-VERSION = "1.1.3"
+VERSION = "1.1.4"
 
 # Repositorio donde se publican las versiones (para el aviso de actualizaciones).
 REPO = "cvulcano/GymAdmin"
