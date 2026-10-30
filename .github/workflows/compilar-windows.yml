@@ -32,10 +32,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: GymAdmin-Windows
-          path: dist/GymAdmin.exe
+          path: |
+            dist/GymAdmin.exe
+            Instalar-GymAdmin.bat
 
       - name: Publicar en Releases (solo al crear una etiqueta vX.Y.Z)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/GymAdmin.exe
+          files: |
+            dist/GymAdmin.exe
+            Instalar-GymAdmin.bat

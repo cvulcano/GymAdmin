@@ -61,6 +61,17 @@ datos/              base de datos SQLite y copias (se crea al iniciar)
 iniciar.sh / .bat   lanzadores
 ```
 
+## Instalar en la PC del cliente (acceso directo)
+
+En la sección **Releases** del repositorio se publican dos archivos: `GymAdmin.exe` y `Instalar-GymAdmin.bat`.
+Descargá los dos **en la misma carpeta** y hacé doble clic en **`Instalar-GymAdmin.bat`**: copia el programa a una
+carpeta fija del usuario y crea el ícono **GymAdmin** en el Escritorio. Listo, el cliente abre con ese ícono.
+
+Si hacés doble clic en el ícono cuando la app ya está abierta, solo se abre el navegador (no se abre dos veces).
+
+Para **actualizar** a una versión nueva: descargá el `GymAdmin.exe` nuevo y volvé a correr el instalador
+(o simplemente reemplazá el `GymAdmin.exe` en la carpeta de instalación). Los datos no se tocan.
+
 ## Cerrar la aplicación
 
 El ejecutable de Windows corre **sin ventana de consola**. Para cerrarlo, entrá a
