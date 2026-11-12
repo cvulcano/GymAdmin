@@ -72,13 +72,28 @@ Si hacés doble clic en el ícono cuando la app ya está abierta, solo se abre e
 Para **actualizar** a una versión nueva: descargá el `GymAdmin.exe` nuevo y volvé a correr el instalador
 (o simplemente reemplazá el `GymAdmin.exe` en la carpeta de instalación). Los datos no se tocan.
 
+## Kiosco (venta de productos)
+
+La sección **Kiosco** permite vender productos (agua, bebidas, barritas) sin tocar
+la contabilidad: alcanza con el permiso **Kiosco** para que un recepcionista pueda
+registrar ventas, pero no cargar gastos ni mover caja.
+
+- **Vender:** se tocan los productos para armar la venta, se elige el medio de pago
+  y se registra. Cada venta se anota sola como **ingreso** (categoría “Venta de
+  productos”) en la contabilidad y no se puede editar a mano desde ahí.
+- **Productos:** catálogo con precio y, si se quiere, **control de stock** (se
+  descuenta en cada venta y avisa cuando se agota). Los productos sin control de
+  stock se venden libremente.
+- **Ventas del día:** total e historial; al **anular** una venta se borra su ingreso
+  y se repone el stock.
+
 ## Usuarios y permisos
 
 La app pide **usuario y contraseña** al abrir. Hay dos tipos de cuenta:
 
 - **Administrador:** acceso total, incluida la gestión de usuarios.
 - **Usuario:** entra solo a las secciones que el administrador le habilite
-  (Clientes, Cobrar cuotas, Ingreso a sala, Contabilidad, Planes, Ajustes).
+  (Clientes, Cobrar cuotas, Kiosco, Ingreso a sala, Contabilidad, Planes, Ajustes).
 
 **Primer ingreso / al actualizar desde una versión sin usuarios:** se crea un
 administrador inicial con usuario **`admin`** y contraseña **`admin`**. En el

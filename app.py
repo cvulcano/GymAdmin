@@ -36,7 +36,7 @@ from urllib.parse import parse_qs, urlparse
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 # Repositorio donde se publican las versiones (para el aviso de actualizaciones).
 REPO = "cvulcano/GymAdmin"
@@ -159,10 +159,37 @@ CREATE TABLE IF NOT EXISTS sesiones (
     creado TEXT NOT NULL,
     expira TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS productos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nombre TEXT NOT NULL,
+    precio INTEGER NOT NULL DEFAULT 0,            -- centavos
+    controla_stock INTEGER NOT NULL DEFAULT 0,
+    stock INTEGER NOT NULL DEFAULT 0,
+    activo INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS ventas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fecha TEXT NOT NULL,
+    total INTEGER NOT NULL,
+    medio TEXT NOT NULL,
+    usuario_id INTEGER,
+    notas TEXT DEFAULT '',
+    creado TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS venta_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    venta_id INTEGER NOT NULL REFERENCES ventas(id),
+    producto_id INTEGER,
+    nombre TEXT NOT NULL,
+    precio INTEGER NOT NULL,
+    cantidad INTEGER NOT NULL,
+    subtotal INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ventas_fecha ON ventas(fecha);
 """
 
 # Partes del sistema que se pueden habilitar por usuario.
-PERMISOS = ["clientes", "cobrar", "asistencia", "contabilidad", "planes", "ajustes", "usuarios"]
+PERMISOS = ["clientes", "cobrar", "ventas", "asistencia", "contabilidad", "planes", "ajustes", "usuarios"]
 DURACION_SESION_HORAS = 12
 
 # Contexto por pedido (cada pedido corre en su propio hilo): guarda el usuario de la sesión.
@@ -340,6 +367,10 @@ def inicializar_db():
     nueva = not os.path.exists(DB_PATH)
     con = conectar()
     con.executescript(ESQUEMA)
+    # Migración: columna que vincula un movimiento con una venta del kiosco.
+    cols_mov = [r["name"] for r in con.execute("PRAGMA table_info(movimientos)")]
+    if "venta_id" not in cols_mov:
+        con.execute("ALTER TABLE movimientos ADD COLUMN venta_id INTEGER")
     if nueva or con.execute("SELECT COUNT(*) FROM config").fetchone()[0] == 0:
         valores = {
             "nombre_gimnasio": "Mi Gimnasio",
@@ -359,6 +390,11 @@ def inicializar_db():
             ("Clase suelta", 500000, 1, "Un día de acceso"),
         ]
         con.executemany("INSERT INTO planes (nombre, precio, duracion_dias, descripcion) VALUES (?,?,?,?)", planes)
+    # Productos de ejemplo para el kiosco (solo en una base nueva).
+    if nueva and con.execute("SELECT COUNT(*) FROM productos").fetchone()[0] == 0:
+        con.executemany("INSERT INTO productos (nombre, precio, controla_stock, stock) VALUES (?,?,?,?)",
+                        [("Agua mineral 500 ml", 80000, 1, 24), ("Bebida isotónica", 150000, 1, 12),
+                         ("Barrita de cereal", 90000, 0, 0)])
     # Usuario administrador inicial (solo si todavía no hay usuarios).
     if con.execute("SELECT COUNT(*) FROM usuarios").fetchone()[0] == 0:
         con.execute("""INSERT INTO usuarios (usuario, nombre, clave, rol, permisos, debe_cambiar, creado)
@@ -938,6 +974,9 @@ def api_movimientos_put(con, mid, body):
     if m["pago_id"]:
         raise ErrorUsuario("Este movimiento corresponde a un cobro de cuota. "
                            "Para corregirlo, anulá el pago desde la ficha del cliente.")
+    if m["venta_id"]:
+        raise ErrorUsuario("Este movimiento corresponde a una venta del kiosco. "
+                           "Para corregirlo, anulá la venta desde la sección Kiosco.")
     tipo = body.get("tipo") if body.get("tipo") in ("ingreso", "egreso") else m["tipo"]
     monto = a_centavos(body.get("monto"))
     fecha = a_fecha(body.get("fecha"), "fecha")
@@ -949,13 +988,152 @@ def api_movimientos_put(con, mid, body):
 
 
 def api_movimientos_delete(con, mid):
-    m = con.execute("SELECT pago_id FROM movimientos WHERE id = ?", (mid,)).fetchone()
+    m = con.execute("SELECT pago_id, venta_id FROM movimientos WHERE id = ?", (mid,)).fetchone()
     if not m:
         raise ErrorUsuario("El movimiento no existe.", 404)
     if m["pago_id"]:
         raise ErrorUsuario("Este movimiento corresponde a un cobro de cuota. "
                            "Para eliminarlo, anulá el pago desde la ficha del cliente.")
+    if m["venta_id"]:
+        raise ErrorUsuario("Este movimiento corresponde a una venta del kiosco. "
+                           "Para eliminarlo, anulá la venta desde la sección Kiosco.")
     con.execute("DELETE FROM movimientos WHERE id = ?", (mid,))
+    con.commit()
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Kiosco: productos y ventas
+# ---------------------------------------------------------------------------
+def producto_dict(r):
+    d = dict(r)
+    d["precio"] = pesos(d["precio"])
+    d["controla_stock"] = bool(d["controla_stock"])
+    return d
+
+
+def api_productos_list(con, q, body):
+    sql = "SELECT * FROM productos"
+    if q.get("activos") == "1":
+        sql += " WHERE activo = 1"
+    sql += " ORDER BY activo DESC, nombre COLLATE NOCASE"
+    return [producto_dict(r) for r in con.execute(sql)]
+
+
+def validar_producto(body):
+    nombre = texto(body, "nombre", 100)
+    if not nombre:
+        raise ErrorUsuario("El nombre del producto es obligatorio.")
+    try:
+        stock = int(body.get("stock") or 0)
+    except (TypeError, ValueError):
+        raise ErrorUsuario("El stock debe ser un número entero.")
+    return {"nombre": nombre, "precio": a_centavos(body.get("precio"), "precio"),
+            "controla_stock": 1 if body.get("controla_stock") else 0, "stock": max(0, stock),
+            "activo": 0 if body.get("activo") is False else 1}
+
+
+def api_productos_post(con, q, body):
+    d = validar_producto(body)
+    con.execute("INSERT INTO productos (nombre, precio, controla_stock, stock, activo) VALUES (?,?,?,?,?)",
+                (d["nombre"], d["precio"], d["controla_stock"], d["stock"], d["activo"]))
+    con.commit()
+    return {"ok": True}
+
+
+def api_productos_put(con, pid, body):
+    if not con.execute("SELECT 1 FROM productos WHERE id = ?", (pid,)).fetchone():
+        raise ErrorUsuario("El producto no existe.", 404)
+    d = validar_producto(body)
+    con.execute("UPDATE productos SET nombre=?, precio=?, controla_stock=?, stock=?, activo=? WHERE id=?",
+                (d["nombre"], d["precio"], d["controla_stock"], d["stock"], d["activo"], pid))
+    con.commit()
+    return {"ok": True}
+
+
+def api_productos_delete(con, pid):
+    usado = con.execute("SELECT COUNT(*) FROM venta_items WHERE producto_id = ?", (pid,)).fetchone()[0]
+    if usado:
+        con.execute("UPDATE productos SET activo = 0 WHERE id = ?", (pid,))
+        con.commit()
+        return {"ok": True, "mensaje": "El producto tiene ventas registradas, así que se desactivó en lugar de eliminarse."}
+    con.execute("DELETE FROM productos WHERE id = ?", (pid,))
+    con.commit()
+    return {"ok": True, "mensaje": "Producto eliminado."}
+
+
+def api_ventas_post(con, q, body):
+    items = body.get("items") or []
+    if not items:
+        raise ErrorUsuario("Agregá al menos un producto a la venta.")
+    fecha = a_fecha(body.get("fecha"), obligatorio=False) or hoy()
+    medio = texto(body, "medio", 60) or "Efectivo"
+    detalle, lineas, total = [], [], 0
+    for it in items:
+        try:
+            pid = int(it.get("producto_id"))
+            cant = int(it.get("cantidad") or 1)
+        except (TypeError, ValueError):
+            raise ErrorUsuario("Hay un producto inválido en la venta.")
+        if cant < 1:
+            continue
+        p = con.execute("SELECT * FROM productos WHERE id = ?", (pid,)).fetchone()
+        if not p:
+            raise ErrorUsuario("Un producto de la venta ya no existe.")
+        if p["controla_stock"] and p["stock"] < cant:
+            raise ErrorUsuario("No hay stock suficiente de %s (quedan %d)." % (p["nombre"], p["stock"]))
+        sub = p["precio"] * cant
+        total += sub
+        detalle.append((pid, p["nombre"], p["precio"], cant, sub))
+        lineas.append("%d× %s" % (cant, p["nombre"]))
+    if total <= 0:
+        raise ErrorUsuario("La venta no tiene importe.")
+    u = usuario_actual()
+    cur = con.execute("INSERT INTO ventas (fecha, total, medio, usuario_id, notas, creado) VALUES (?,?,?,?,?,?)",
+                      (fecha.isoformat(), total, medio, (u or {}).get("id"), texto(body, "notas", 200),
+                       datetime.now().isoformat(timespec="seconds")))
+    vid = cur.lastrowid
+    for pid, nom, precio, cant, sub in detalle:
+        con.execute("INSERT INTO venta_items (venta_id, producto_id, nombre, precio, cantidad, subtotal) VALUES (?,?,?,?,?,?)",
+                    (vid, pid, nom, precio, cant, sub))
+        con.execute("UPDATE productos SET stock = stock - ? WHERE id = ? AND controla_stock = 1", (cant, pid))
+    con.execute("""INSERT INTO movimientos (fecha, tipo, categoria, descripcion, monto, medio, venta_id, creado)
+        VALUES (?, 'ingreso', 'Venta de productos', ?, ?, ?, ?, ?)""",
+                (fecha.isoformat(), "Venta: " + ", ".join(lineas), total, medio, vid,
+                 datetime.now().isoformat(timespec="seconds")))
+    con.commit()
+    return {"ok": True, "venta_id": vid, "total": pesos(total), "detalle": lineas, "medio": medio}
+
+
+def api_ventas_list(con, q, body):
+    t = hoy()
+    desde = a_fecha(q.get("desde"), obligatorio=False) or t
+    hasta = a_fecha(q.get("hasta"), obligatorio=False) or t
+    ventas, total = [], 0
+    for v in con.execute("""SELECT vt.*, u.nombre AS vendedor FROM ventas vt
+            LEFT JOIN usuarios u ON u.id = vt.usuario_id
+            WHERE vt.fecha BETWEEN ? AND ? ORDER BY vt.id DESC""", (desde.isoformat(), hasta.isoformat())):
+        d = dict(v)
+        total += d["total"]
+        d["total"] = pesos(d["total"])
+        d["items"] = [{"nombre": i["nombre"], "cantidad": i["cantidad"], "subtotal": pesos(i["subtotal"])}
+                      for i in con.execute("SELECT * FROM venta_items WHERE venta_id = ? ORDER BY id", (v["id"],))]
+        ventas.append(d)
+    return {"desde": desde.isoformat(), "hasta": hasta.isoformat(), "ventas": ventas,
+            "total": pesos(total), "cantidad": len(ventas)}
+
+
+def api_ventas_delete(con, vid):
+    v = con.execute("SELECT * FROM ventas WHERE id = ?", (vid,)).fetchone()
+    if not v:
+        raise ErrorUsuario("La venta no existe.", 404)
+    for i in con.execute("SELECT * FROM venta_items WHERE venta_id = ?", (vid,)):
+        if i["producto_id"]:
+            con.execute("UPDATE productos SET stock = stock + ? WHERE id = ? AND controla_stock = 1",
+                        (i["cantidad"], i["producto_id"]))
+    con.execute("DELETE FROM movimientos WHERE venta_id = ?", (vid,))
+    con.execute("DELETE FROM venta_items WHERE venta_id = ?", (vid,))
+    con.execute("DELETE FROM ventas WHERE id = ?", (vid,))
     con.commit()
     return {"ok": True}
 
@@ -1124,6 +1302,13 @@ RUTAS = [
     ("POST", r"^/api/movimientos$", api_movimientos_post, "contabilidad"),
     ("PUT", r"^/api/movimientos/(\d+)$", lambda con, q, b, i: api_movimientos_put(con, int(i), b), "contabilidad"),
     ("DELETE", r"^/api/movimientos/(\d+)$", lambda con, q, b, i: api_movimientos_delete(con, int(i)), "contabilidad"),
+    ("GET", r"^/api/productos$", api_productos_list, "ventas"),
+    ("POST", r"^/api/productos$", api_productos_post, "ventas"),
+    ("PUT", r"^/api/productos/(\d+)$", lambda con, q, b, i: api_productos_put(con, int(i), b), "ventas"),
+    ("DELETE", r"^/api/productos/(\d+)$", lambda con, q, b, i: api_productos_delete(con, int(i)), "ventas"),
+    ("GET", r"^/api/ventas$", api_ventas_list, "ventas"),
+    ("POST", r"^/api/ventas$", api_ventas_post, "ventas"),
+    ("DELETE", r"^/api/ventas/(\d+)$", lambda con, q, b, i: api_ventas_delete(con, int(i)), "ventas"),
     ("GET", r"^/api/usuarios$", api_usuarios_list, "usuarios"),
     ("POST", r"^/api/usuarios$", api_usuarios_post, "usuarios"),
     ("PUT", r"^/api/usuarios/(\d+)$", lambda con, q, b, i: api_usuarios_put(con, int(i), b), "usuarios"),

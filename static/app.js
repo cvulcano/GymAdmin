@@ -33,6 +33,8 @@ const ICONOS = {
   reloj: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   tendencia: '<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>',
   usuarios: '<circle cx="9" cy="8" r="3.3"/><path d="M3 20c.5-3.3 3-5 6-5s5.5 1.7 6 5"/><path d="M16 4.5a3.3 3.3 0 0 1 0 6.4"/><path d="M18.5 20c-.2-2.3-1.2-3.9-2.8-4.8"/>',
+  carrito: '<circle cx="9" cy="20" r="1.4"/><circle cx="17" cy="20" r="1.4"/><path d="M2 3h2.2l2.1 11.2a1.6 1.6 0 0 0 1.6 1.3h8.3a1.6 1.6 0 0 0 1.6-1.3L21 7H5.3"/>',
+  caja2: '<path d="M3 8l2-4h14l2 4"/><rect x="3" y="8" width="18" height="12" rx="2"/><path d="M9 12h6"/>',
   salir: '<path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="M10 12H3"/><path d="m6 8-4 4 4 4"/>',
   candado: '<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><circle cx="12" cy="15.5" r="1.4"/>',
   escudo: '<path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/><path d="m9 12 2 2 4-4"/>',
@@ -48,11 +50,11 @@ let PLANES = [];
 let USUARIO = null;
 
 const ETIQUETAS_PERMISOS = {
-  clientes: "Clientes", cobrar: "Cobrar cuotas", asistencia: "Ingreso a sala",
+  clientes: "Clientes", cobrar: "Cobrar cuotas", ventas: "Kiosco (vender)", asistencia: "Ingreso a sala",
   contabilidad: "Contabilidad", planes: "Planes y precios", ajustes: "Ajustes", usuarios: "Gestionar usuarios",
 };
-const PERMISOS_ORDEN = ["clientes", "cobrar", "asistencia", "contabilidad", "planes", "ajustes", "usuarios"];
-const PERM_VISTA = { asistencia: "asistencia", clientes: "clientes", contabilidad: "contabilidad", planes: "planes", usuarios: "usuarios", ajustes: "ajustes" };
+const PERMISOS_ORDEN = ["clientes", "cobrar", "ventas", "asistencia", "contabilidad", "planes", "ajustes", "usuarios"];
+const PERM_VISTA = { asistencia: "asistencia", clientes: "clientes", ventas: "ventas", contabilidad: "contabilidad", planes: "planes", usuarios: "usuarios", ajustes: "ajustes" };
 const puede = (perm) => !!USUARIO && (USUARIO.es_admin || (USUARIO.permisos || []).indexOf(perm) >= 0);
 
 const fmtNum = new Intl.NumberFormat("es-AR", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
@@ -317,6 +319,7 @@ VISTAS.inicio = async (cont) => {
   };
   const accesos = [];
   if (puede("cobrar")) accesos.push(`<button class="acceso destacado" data-accion="cobrar"><span class="burbuja">${ico("dinero")}</span><span>Cobrar cuota<small>Registrar un pago</small></span></button>`);
+  if (puede("ventas")) accesos.push(`<button class="acceso" data-accion="vender"><span class="burbuja">${ico("carrito")}</span><span>Vender<small>Agua, bebidas, etc.</small></span></button>`);
   if (puede("asistencia")) accesos.push(`<button class="acceso" data-accion="asistencia"><span class="burbuja">${ico("check")}</span><span>Ingreso a sala<small>Controlar por DNI</small></span></button>`);
   if (puede("clientes")) accesos.push(`<button class="acceso" data-accion="cliente"><span class="burbuja">${ico("personaMas")}</span><span>Nuevo cliente<small>Dar de alta un socio</small></span></button>`);
   if (puede("contabilidad")) accesos.push(`<button class="acceso" data-accion="gasto"><span class="burbuja">${ico("gasto")}</span><span>Registrar gasto<small>Alquiler, sueldos, etc.</small></span></button>`);
@@ -347,6 +350,7 @@ VISTAS.inicio = async (cont) => {
     ${listaVenc}
     ${abajo.length ? `<div class="grilla g-2 mt">${abajo.join("")}</div>` : ""}`;
   const bCob = cont.querySelector("[data-accion=cobrar]"); if (bCob) bCob.onclick = () => formCobro();
+  const bVen = cont.querySelector("[data-accion=vender]"); if (bVen) bVen.onclick = () => irA("ventas");
   const bAsi = cont.querySelector("[data-accion=asistencia]"); if (bAsi) bAsi.onclick = () => irA("asistencia");
   const bCli = cont.querySelector("[data-accion=cliente]"); if (bCli) bCli.onclick = () => formCliente();
   const bGas = cont.querySelector("[data-accion=gasto]"); if (bGas) bGas.onclick = () => formMovimiento("egreso");
@@ -935,6 +939,177 @@ function formPlan(p = null) {
       else await api("POST", "/api/planes", datos);
       PLANES = await api("GET", "/api/planes");
       toast("Plan guardado", "ok");
+      cerrarModal();
+      refrescar();
+    } catch (err) { toast(err.message, "error"); }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// KIOSCO (productos y ventas)
+// ---------------------------------------------------------------------------
+const estadoKiosco = { pestana: "vender", carrito: [] };
+
+VISTAS.ventas = async (cont) => {
+  const productos = await api("GET", "/api/productos");
+  cont.innerHTML = `
+    <div class="encabezado"><div><h1>Kiosco</h1><p>Vendé productos (agua, bebidas, barritas). Cada venta se registra como ingreso en la contabilidad.</p></div></div>
+    <div class="pestanas" style="margin-bottom:16px">
+      <button data-p="vender">Vender</button><button data-p="productos">Productos</button><button data-p="historial">Ventas del día</button>
+    </div>
+    <div id="kioscoCuerpo"></div>`;
+  const pintar = (p) => {
+    estadoKiosco.pestana = p;
+    $$(".pestanas button", cont).forEach((b) => b.classList.toggle("activo", b.dataset.p === p));
+    if (p === "vender") pintarVender(productos);
+    else if (p === "productos") pintarProductos(productos);
+    else pintarHistorial();
+  };
+  $$(".pestanas button", cont).forEach((b) => b.onclick = () => pintar(b.dataset.p));
+  pintar(estadoKiosco.pestana === "productos" ? "vender" : estadoKiosco.pestana);
+};
+
+function pintarVender(productos) {
+  const z = $("#kioscoCuerpo");
+  const activos = productos.filter((p) => p.activo);
+  const medios = CONFIG.medios_pago.map((x) => `<option>${esc(x)}</option>`).join("");
+  z.innerHTML = `<div class="kiosco-pos">
+    <div class="pos-productos">
+      ${activos.length ? `<div class="pos-grilla" id="posGrilla">${activos.map((p) => {
+        const sinStock = p.controla_stock && p.stock <= 0;
+        return `<button class="pos-prod ${sinStock ? "agotado" : ""}" data-prod="${p.id}" ${sinStock ? "disabled" : ""}>
+          <span class="pos-nombre">${esc(p.nombre)}</span>
+          <span class="pos-precio num">${dinero(p.precio)}</span>
+          ${p.controla_stock ? `<span class="pos-stock ${p.stock <= 3 ? "bajo" : ""}">${sinStock ? "Sin stock" : "Stock: " + p.stock}</span>` : ""}
+        </button>`;
+      }).join("")}</div>` : `<div class="tarjeta vacio"><b>No hay productos cargados</b>Agregá productos desde la pestaña “Productos”.</div>`}
+    </div>
+    <div class="pos-carrito tarjeta">
+      <div class="tarjeta-cab"><h2>Venta</h2><button class="btn btn-chico btn-texto" id="posVaciar">Vaciar</button></div>
+      <div id="posItems"></div>
+      <div class="pos-pie">
+        <div class="campo"><label>Medio de pago</label><select id="posMedio">${medios}</select></div>
+        <div class="pos-total"><span>Total</span><b class="num" id="posTotal">${dinero(0)}</b></div>
+        <button class="btn btn-ok btn-bloque" id="posCobrar" disabled>${ico("check")}Registrar venta</button>
+      </div>
+    </div></div>`;
+  const porId = (id) => productos.find((p) => p.id === +id);
+  const pintarItems = () => {
+    const cont2 = $("#posItems");
+    if (!estadoKiosco.carrito.length) {
+      cont2.innerHTML = `<div class="vacio" style="padding:24px 16px"><b>Carrito vacío</b>Tocá un producto para agregarlo.</div>`;
+    } else {
+      cont2.innerHTML = `<ul class="pos-lista">${estadoKiosco.carrito.map((it) => {
+        const p = porId(it.producto_id);
+        return `<li><div class="pos-li-info"><b>${esc(p.nombre)}</b><span class="sec num">${dinero(p.precio)} c/u</span></div>
+          <div class="pos-cant"><button class="btn btn-chico" data-menos="${it.producto_id}">−</button><span class="num">${it.cantidad}</span><button class="btn btn-chico" data-mas="${it.producto_id}">+</button></div>
+          <b class="num pos-sub">${dinero(p.precio * it.cantidad)}</b></li>`;
+      }).join("")}</ul>`;
+    }
+    const total = estadoKiosco.carrito.reduce((s, it) => s + porId(it.producto_id).precio * it.cantidad, 0);
+    $("#posTotal").textContent = dinero(total);
+    $("#posCobrar").disabled = !estadoKiosco.carrito.length;
+    $$("[data-mas]", cont2).forEach((b) => b.onclick = () => cambiarCant(b.dataset.mas, 1));
+    $$("[data-menos]", cont2).forEach((b) => b.onclick = () => cambiarCant(b.dataset.menos, -1));
+  };
+  const agregar = (id) => {
+    const it = estadoKiosco.carrito.find((x) => x.producto_id === +id);
+    if (it) cambiarCant(id, 1);
+    else { estadoKiosco.carrito.push({ producto_id: +id, cantidad: 1 }); pintarItems(); }
+  };
+  function cambiarCant(id, delta) {
+    const it = estadoKiosco.carrito.find((x) => x.producto_id === +id);
+    if (!it) return;
+    const p = porId(id);
+    const nueva = it.cantidad + delta;
+    if (nueva <= 0) estadoKiosco.carrito = estadoKiosco.carrito.filter((x) => x.producto_id !== +id);
+    else if (p.controla_stock && nueva > p.stock) return toast(`Solo hay ${p.stock} de ${p.nombre}`, "error");
+    else it.cantidad = nueva;
+    pintarItems();
+  }
+  $$("[data-prod]", z).forEach((b) => b.onclick = () => agregar(b.dataset.prod));
+  $("#posVaciar", z).onclick = () => { estadoKiosco.carrito = []; pintarItems(); };
+  $("#posCobrar", z).onclick = async () => {
+    if (!estadoKiosco.carrito.length) return;
+    const btn = $("#posCobrar", z); btn.disabled = true;
+    try {
+      const r = await api("POST", "/api/ventas", { items: estadoKiosco.carrito, medio: $("#posMedio", z).value });
+      toast(`Venta registrada: ${dinero(r.total)}`, "ok");
+      estadoKiosco.carrito = [];
+      refrescarFondo();
+    } catch (e) { toast(e.message, "error"); btn.disabled = false; }
+  };
+  pintarItems();
+}
+
+function pintarProductos(productos) {
+  const z = $("#kioscoCuerpo");
+  z.innerHTML = `<div style="display:flex;justify-content:flex-end;margin-bottom:12px"><button class="btn btn-primario" id="btnNuevoProd">${ico("mas")}Nuevo producto</button></div>
+    <div class="tarjeta"><div class="tabla-cont"><table><thead><tr><th>Producto</th><th class="der">Precio</th><th>Stock</th><th>Estado</th><th></th></tr></thead><tbody>
+      ${productos.length ? productos.map((p) => `<tr>
+        <td class="nombre-cel">${esc(p.nombre)}</td>
+        <td class="der num">${dinero(p.precio)}</td>
+        <td>${p.controla_stock ? `<span class="${p.stock <= 3 ? "monto-egr" : ""} num">${p.stock}</span>` : `<span class="sec">sin control</span>`}</td>
+        <td>${p.activo ? `<span class="badge b-al_dia">Activo</span>` : `<span class="badge b-baja">Inactivo</span>`}</td>
+        <td class="der" style="white-space:nowrap"><button class="btn btn-chico btn-texto" data-ed="${p.id}" title="Editar">${ico("editar")}</button><button class="btn btn-chico btn-texto" data-del="${p.id}" title="Eliminar">${ico("borrar")}</button></td></tr>`).join("")
+        : `<tr><td colspan="5"><div class="vacio"><b>No hay productos</b>Agregá el primero con “Nuevo producto”.</div></td></tr>`}
+    </tbody></table></div></div>
+    <div class="aviso-caja mt">Marcá “Controlar stock” en los productos que quieras descontar automáticamente en cada venta (por ejemplo las bebidas). El resto se puede vender sin llevar stock.</div>`;
+  const porId = (id) => productos.find((p) => p.id === +id);
+  $("#btnNuevoProd").onclick = () => formProducto();
+  $$("[data-ed]", z).forEach((b) => b.onclick = () => formProducto(porId(b.dataset.ed)));
+  $$("[data-del]", z).forEach((b) => b.onclick = async () => {
+    const p = porId(b.dataset.del);
+    if (!(await confirmar("Eliminar producto", `¿Eliminar <b>${esc(p.nombre)}</b>? Si tiene ventas registradas, se desactiva en vez de borrarse.`, "Eliminar"))) return;
+    try { const r = await api("DELETE", `/api/productos/${p.id}`); toast(r.mensaje, "ok"); refrescar(); } catch (e) { toast(e.message, "error"); }
+  });
+}
+
+async function pintarHistorial() {
+  const z = $("#kioscoCuerpo");
+  z.innerHTML = `<div class="vacio">Cargando…</div>`;
+  let data;
+  try { data = await api("GET", "/api/ventas"); } catch (e) { z.innerHTML = `<div class="tarjeta vacio">${esc(e.message)}</div>`; return; }
+  z.innerHTML = `
+    <div class="grilla g-2" style="margin-bottom:16px">
+      <div class="tarjeta kpi"><div class="kpi-tit">${ico("carrito")}Ventas de hoy</div><div class="kpi-valor">${data.cantidad}</div></div>
+      <div class="tarjeta kpi verde"><div class="kpi-tit">${ico("dinero")}Total vendido hoy</div><div class="kpi-valor">${dinero(data.total)}</div></div>
+    </div>
+    <div class="tarjeta"><div class="tarjeta-cab"><h2>Ventas de hoy</h2></div>
+      ${data.ventas.length ? `<div class="tabla-cont"><table><thead><tr><th>Hora</th><th>Detalle</th><th>Medio</th><th>Vendió</th><th class="der">Total</th><th></th></tr></thead><tbody>
+        ${data.ventas.map((v) => `<tr><td class="num">${esc((v.creado || "").slice(11, 16))}</td>
+          <td>${v.items.map((i) => `${i.cantidad}× ${esc(i.nombre)}`).join(", ")}</td>
+          <td>${esc(v.medio)}</td><td class="sec">${esc(v.vendedor || "—")}</td>
+          <td class="der num monto-ing">${dinero(v.total)}</td>
+          <td class="der"><button class="btn btn-chico btn-texto" data-anular="${v.id}" title="Anular venta">${ico("borrar")}</button></td></tr>`).join("")}
+      </tbody></table></div>` : `<div class="vacio"><b>Todavía no hubo ventas hoy</b>Las ventas que registres van a aparecer acá.</div>`}
+    </div>`;
+  $$("[data-anular]", z).forEach((b) => b.onclick = async () => {
+    if (!(await confirmar("Anular venta", "Se va a eliminar la venta, su ingreso en la contabilidad y se repone el stock. ¿Continuar?", "Anular venta"))) return;
+    try { await api("DELETE", `/api/ventas/${b.dataset.anular}`); toast("Venta anulada", "ok"); pintarHistorial(); } catch (e) { toast(e.message, "error"); }
+  });
+}
+
+function formProducto(p = null) {
+  const m = abrirModal(`${cabModal(p ? "Editar producto" : "Nuevo producto")}
+    <form id="fProd"><div class="modal-cuerpo"><div class="form-grilla">
+      <div class="campo ancho"><label class="req">Nombre</label><input type="text" name="nombre" value="${p ? esc(p.nombre) : ""}" placeholder="Ej.: Agua mineral 500 ml" required autofocus></div>
+      <div class="campo"><label class="req">Precio de venta</label><input type="number" name="precio" min="0" step="0.01" value="${p ? p.precio : ""}" required></div>
+      <div class="campo"><label>Stock actual</label><input type="number" name="stock" min="0" step="1" value="${p ? p.stock : 0}" id="prodStock"></div>
+      <div class="campo ancho"><label style="display:flex;gap:8px;align-items:center;font-weight:500"><input type="checkbox" name="controla_stock" id="prodControla" ${p && p.controla_stock ? "checked" : ""}> Controlar stock (descontar en cada venta y avisar cuando se agota)</label></div>
+      ${p ? `<div class="campo ancho"><label style="display:flex;gap:8px;align-items:center;font-weight:500"><input type="checkbox" name="activo" ${p.activo ? "checked" : ""}> Producto activo (aparece para vender)</label></div>` : ""}
+    </div></div>
+    <div class="modal-pie"><button type="button" class="btn" data-cerrar>Cancelar</button><button type="submit" class="btn btn-primario">Guardar</button></div></form>`);
+  const sincroStock = () => { $("#prodStock", m).disabled = !$("#prodControla", m).checked; };
+  $("#prodControla", m).onchange = sincroStock; sincroStock();
+  $("#fProd", m).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const d = leerForm(e.target);
+    if (!p) d.activo = true;
+    try {
+      if (p) await api("PUT", `/api/productos/${p.id}`, d);
+      else await api("POST", "/api/productos", d);
+      toast("Producto guardado", "ok");
       cerrarModal();
       refrescar();
     } catch (err) { toast(err.message, "error"); }
