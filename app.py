@@ -15,10 +15,12 @@ Uso:
 
 import argparse
 import csv
+import hashlib
 import io
 import json
 import os
 import re
+import secrets
 import shutil
 import socket
 import sqlite3
@@ -28,12 +30,13 @@ import threading
 import time
 import webbrowser
 from datetime import date, datetime, timedelta
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-VERSION = "1.1.4"
+VERSION = "1.2.0"
 
 # Repositorio donde se publican las versiones (para el aviso de actualizaciones).
 REPO = "cvulcano/GymAdmin"
@@ -139,7 +142,120 @@ CREATE TABLE IF NOT EXISTS asistencias (
     hora TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_asist_fecha ON asistencias(fecha);
+CREATE TABLE IF NOT EXISTS usuarios (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    usuario TEXT NOT NULL UNIQUE,
+    nombre TEXT NOT NULL DEFAULT '',
+    clave TEXT NOT NULL,
+    rol TEXT NOT NULL DEFAULT 'empleado',        -- 'admin' o 'empleado'
+    permisos TEXT NOT NULL DEFAULT '[]',          -- JSON: lista de permisos
+    activo INTEGER NOT NULL DEFAULT 1,
+    debe_cambiar INTEGER NOT NULL DEFAULT 0,      -- forzar cambio de clave al ingresar
+    creado TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS sesiones (
+    token TEXT PRIMARY KEY,
+    usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+    creado TEXT NOT NULL,
+    expira TEXT NOT NULL
+);
 """
+
+# Partes del sistema que se pueden habilitar por usuario.
+PERMISOS = ["clientes", "cobrar", "asistencia", "contabilidad", "planes", "ajustes", "usuarios"]
+DURACION_SESION_HORAS = 12
+
+# Contexto por pedido (cada pedido corre en su propio hilo): guarda el usuario de la sesión.
+_ctx = threading.local()
+
+
+def usuario_actual():
+    return getattr(_ctx, "usuario", None)
+
+
+def tiene_permiso(permiso):
+    u = usuario_actual()
+    if not u:
+        return False
+    if u.get("es_admin"):
+        return True
+    perms = permiso if isinstance(permiso, (list, tuple)) else (permiso,)
+    return any(p in u.get("permisos", []) for p in perms)
+
+
+def exigir(permiso):
+    """Lanza error si el usuario actual no tiene el permiso (None = cualquier usuario con sesión)."""
+    if usuario_actual() is None:
+        raise ErrorUsuario("Tenés que iniciar sesión.", 401)
+    if permiso is None:
+        return
+    if not tiene_permiso(permiso):
+        raise ErrorUsuario("No tenés permiso para esta acción. Pedíselo al administrador.", 403)
+
+
+# ---------------------------------------------------------------------------
+# Contraseñas y sesiones
+# ---------------------------------------------------------------------------
+def hash_clave(clave, salt=None, iteraciones=120000):
+    salt = salt or secrets.token_hex(16)
+    h = hashlib.pbkdf2_hmac("sha256", (clave or "").encode("utf-8"), bytes.fromhex(salt), iteraciones)
+    return "pbkdf2$%d$%s$%s" % (iteraciones, salt, h.hex())
+
+
+def verificar_clave(clave, guardado):
+    try:
+        _, it, salt, hh = (guardado or "").split("$")
+        calc = hashlib.pbkdf2_hmac("sha256", (clave or "").encode("utf-8"), bytes.fromhex(salt), int(it))
+        return secrets.compare_digest(calc.hex(), hh)
+    except Exception:
+        return False
+
+
+def usuario_publico(u):
+    """Datos del usuario para mostrar/usar en la app (sin la contraseña)."""
+    if u is None:
+        return None
+    try:
+        permisos = json.loads(u["permisos"] or "[]")
+    except Exception:
+        permisos = []
+    es_admin = u["rol"] == "admin"
+    if es_admin:
+        permisos = list(PERMISOS)
+    return {"id": u["id"], "usuario": u["usuario"], "nombre": u["nombre"] or u["usuario"],
+            "rol": u["rol"], "es_admin": es_admin, "permisos": permisos,
+            "debe_cambiar": bool(u["debe_cambiar"])}
+
+
+def crear_sesion(con, usuario_id):
+    token = secrets.token_urlsafe(32)
+    ahora = datetime.now()
+    con.execute("INSERT INTO sesiones (token, usuario_id, creado, expira) VALUES (?,?,?,?)",
+                (token, usuario_id, ahora.isoformat(timespec="seconds"),
+                 (ahora + timedelta(hours=DURACION_SESION_HORAS)).isoformat(timespec="seconds")))
+    con.execute("DELETE FROM sesiones WHERE expira < ?", (ahora.isoformat(timespec="seconds"),))
+    con.commit()
+    return token
+
+
+def usuario_por_token(con, token):
+    if not token:
+        return None
+    fila = con.execute("""SELECT s.expira AS s_expira, u.* FROM sesiones s
+        JOIN usuarios u ON u.id = s.usuario_id WHERE s.token = ?""", (token,)).fetchone()
+    if not fila:
+        return None
+    ahora = datetime.now().isoformat(timespec="seconds")
+    if fila["s_expira"] < ahora or not fila["activo"]:
+        if fila["s_expira"] < ahora:
+            con.execute("DELETE FROM sesiones WHERE token = ?", (token,))
+            con.commit()
+        return None
+    # extender la sesión mientras se use
+    con.execute("UPDATE sesiones SET expira = ? WHERE token = ?",
+                ((datetime.now() + timedelta(hours=DURACION_SESION_HORAS)).isoformat(timespec="seconds"), token))
+    con.commit()
+    return fila
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +359,11 @@ def inicializar_db():
             ("Clase suelta", 500000, 1, "Un día de acceso"),
         ]
         con.executemany("INSERT INTO planes (nombre, precio, duracion_dias, descripcion) VALUES (?,?,?,?)", planes)
+    # Usuario administrador inicial (solo si todavía no hay usuarios).
+    if con.execute("SELECT COUNT(*) FROM usuarios").fetchone()[0] == 0:
+        con.execute("""INSERT INTO usuarios (usuario, nombre, clave, rol, permisos, debe_cambiar, creado)
+            VALUES ('admin', 'Administrador', ?, 'admin', '[]', 1, ?)""",
+                    (hash_clave("admin"), datetime.now().isoformat(timespec="seconds")))
     con.commit()
     con.close()
     copia_automatica()
@@ -425,7 +546,7 @@ def api_dashboard(con, q, body):
     ultimos = [dict(r) for r in con.execute("""
         SELECT a.hora, c.id AS cliente_id, c.nombre, c.apellido FROM asistencias a
         JOIN clientes c ON c.id = a.cliente_id WHERE a.fecha = ? ORDER BY a.id DESC LIMIT 8""", (t.isoformat(),))]
-    return {
+    datos = {
         "nombre_gimnasio": cfg.get("nombre_gimnasio"),
         "hoy": t.isoformat(),
         "activos": activos,
@@ -435,16 +556,22 @@ def api_dashboard(con, q, body):
         "cant_vencidas": len(vencidas),
         "por_vencer": por_vencer[:50],
         "cant_por_vencer": len(por_vencer),
-        "ingresos_mes": pesos(tot["ingresos"]),
-        "egresos_mes": pesos(tot["egresos"]),
-        "resultado_mes": pesos(tot["ingresos"] - tot["egresos"]),
-        "ingresos_hoy": pesos(hoy_tot["ingresos"]),
-        "egresos_hoy": pesos(hoy_tot["egresos"]),
-        "caja_efectivo": pesos(caja),
         "asistencias_hoy": asist_hoy,
         "ultimas_asistencias": ultimos,
-        "serie": serie_mensual(con, t.year, t.month, 6),
+        "ver_dinero": tiene_permiso("contabilidad"),
     }
+    # Los datos de dinero solo se envían a quien tenga permiso de contabilidad.
+    if datos["ver_dinero"]:
+        datos.update({
+            "ingresos_mes": pesos(tot["ingresos"]),
+            "egresos_mes": pesos(tot["egresos"]),
+            "resultado_mes": pesos(tot["ingresos"] - tot["egresos"]),
+            "ingresos_hoy": pesos(hoy_tot["ingresos"]),
+            "egresos_hoy": pesos(hoy_tot["egresos"]),
+            "caja_efectivo": pesos(caja),
+            "serie": serie_mensual(con, t.year, t.month, 6),
+        })
+    return datos
 
 
 def serie_mensual(con, anio, mes, cantidad):
@@ -877,31 +1004,130 @@ def export_movimientos(con, q):
 
 
 # ---------------------------------------------------------------------------
+# Usuarios (gestión; requiere permiso "usuarios")
+# ---------------------------------------------------------------------------
+def _usuario_fila_dict(r):
+    try:
+        permisos = json.loads(r["permisos"] or "[]")
+    except Exception:
+        permisos = []
+    return {"id": r["id"], "usuario": r["usuario"], "nombre": r["nombre"] or r["usuario"],
+            "rol": r["rol"], "es_admin": r["rol"] == "admin", "activo": bool(r["activo"]),
+            "permisos": list(PERMISOS) if r["rol"] == "admin" else permisos,
+            "debe_cambiar": bool(r["debe_cambiar"]), "creado": r["creado"]}
+
+
+def api_usuarios_list(con, q, body):
+    return [_usuario_fila_dict(r) for r in
+            con.execute("SELECT * FROM usuarios ORDER BY (rol='admin') DESC, usuario COLLATE NOCASE")]
+
+
+def _validar_usuario_datos(con, body, uid=None):
+    usuario = re.sub(r"\s+", "", (body.get("usuario") or "")).lower()[:40]
+    if not usuario:
+        raise ErrorUsuario("El nombre de usuario es obligatorio.")
+    if not re.match(r"^[a-z0-9._-]+$", usuario):
+        raise ErrorUsuario("El usuario solo puede tener letras, números, punto, guion y guion bajo.")
+    otro = con.execute("SELECT id FROM usuarios WHERE lower(usuario) = ? AND id != ?",
+                       (usuario, uid or 0)).fetchone()
+    if otro:
+        raise ErrorUsuario("Ya existe un usuario con ese nombre.")
+    rol = "admin" if body.get("rol") == "admin" else "empleado"
+    permisos = [p for p in (body.get("permisos") or []) if p in PERMISOS]
+    return {"usuario": usuario, "nombre": texto(body, "nombre", 80) or usuario, "rol": rol,
+            "permisos": json.dumps(permisos, ensure_ascii=False)}
+
+
+def api_usuarios_post(con, q, body):
+    datos = _validar_usuario_datos(con, body)
+    clave = body.get("clave") or ""
+    if len(clave) < 4:
+        raise ErrorUsuario("La contraseña debe tener al menos 4 caracteres.")
+    con.execute("""INSERT INTO usuarios (usuario, nombre, clave, rol, permisos, debe_cambiar, creado)
+        VALUES (?,?,?,?,?,?,?)""",
+                (datos["usuario"], datos["nombre"], hash_clave(clave), datos["rol"], datos["permisos"],
+                 1 if body.get("debe_cambiar") else 0, datetime.now().isoformat(timespec="seconds")))
+    con.commit()
+    return {"ok": True}
+
+
+def _ultimo_admin(con, uid):
+    """True si uid es el único administrador activo (no se puede quitar/desactivar)."""
+    admins = con.execute("SELECT COUNT(*) FROM usuarios WHERE rol='admin' AND activo=1 AND id != ?",
+                         (uid,)).fetchone()[0]
+    return admins == 0
+
+
+def api_usuarios_put(con, uid, body):
+    actual = con.execute("SELECT * FROM usuarios WHERE id = ?", (uid,)).fetchone()
+    if not actual:
+        raise ErrorUsuario("El usuario no existe.", 404)
+    datos = _validar_usuario_datos(con, body, uid)
+    activo = 0 if body.get("activo") is False else 1
+    # No permitir quedarse sin ningún administrador activo
+    if actual["rol"] == "admin" and (datos["rol"] != "admin" or not activo) and _ultimo_admin(con, uid):
+        raise ErrorUsuario("Tiene que haber al menos un administrador activo. "
+                           "Asigná otro administrador antes de cambiar este.")
+    con.execute("UPDATE usuarios SET usuario=?, nombre=?, rol=?, permisos=?, activo=? WHERE id=?",
+                (datos["usuario"], datos["nombre"], datos["rol"], datos["permisos"], activo, uid))
+    if body.get("clave"):
+        if len(body["clave"]) < 4:
+            raise ErrorUsuario("La contraseña debe tener al menos 4 caracteres.")
+        con.execute("UPDATE usuarios SET clave=?, debe_cambiar=? WHERE id=?",
+                    (hash_clave(body["clave"]), 1 if body.get("debe_cambiar") else 0, uid))
+    con.commit()
+    return {"ok": True}
+
+
+def api_usuarios_delete(con, uid):
+    u = usuario_actual()
+    if u and u["id"] == uid:
+        raise ErrorUsuario("No podés eliminar tu propio usuario.")
+    fila = con.execute("SELECT * FROM usuarios WHERE id = ?", (uid,)).fetchone()
+    if not fila:
+        raise ErrorUsuario("El usuario no existe.", 404)
+    if fila["rol"] == "admin" and _ultimo_admin(con, uid):
+        raise ErrorUsuario("No podés eliminar al único administrador.")
+    con.execute("DELETE FROM sesiones WHERE usuario_id = ?", (uid,))
+    con.execute("DELETE FROM usuarios WHERE id = ?", (uid,))
+    con.commit()
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
 # Servidor HTTP
 # ---------------------------------------------------------------------------
+# Cada ruta: (método, patrón, función, permiso).
+#   permiso = None  -> cualquier usuario con sesión
+#   permiso = "x"   -> requiere ese permiso (admin siempre puede)
+#   permiso = ("a","b") -> requiere alguno de esos permisos
 RUTAS = [
-    ("GET", r"^/api/config$", api_config_get),
-    ("PUT", r"^/api/config$", api_config_put),
-    ("GET", r"^/api/dashboard$", api_dashboard),
-    ("GET", r"^/api/actualizacion$", lambda con, q, b: consultar_actualizacion(q.get("forzar") == "1")),
-    ("GET", r"^/api/clientes$", api_clientes_list),
-    ("POST", r"^/api/clientes$", api_clientes_post),
-    ("GET", r"^/api/clientes/(\d+)$", lambda con, q, b, i: api_cliente_get(con, int(i))),
-    ("PUT", r"^/api/clientes/(\d+)$", lambda con, q, b, i: api_clientes_put(con, int(i), b)),
-    ("DELETE", r"^/api/clientes/(\d+)$", lambda con, q, b, i: api_clientes_delete(con, int(i))),
-    ("GET", r"^/api/planes$", api_planes_list),
-    ("POST", r"^/api/planes$", api_planes_post),
-    ("PUT", r"^/api/planes/(\d+)$", lambda con, q, b, i: api_planes_put(con, int(i), b)),
-    ("DELETE", r"^/api/planes/(\d+)$", lambda con, q, b, i: api_planes_delete(con, int(i))),
-    ("POST", r"^/api/pagos$", api_pagos_post),
-    ("DELETE", r"^/api/pagos/(\d+)$", lambda con, q, b, i: api_pagos_delete(con, int(i))),
-    ("GET", r"^/api/asistencias$", api_asistencias_list),
-    ("POST", r"^/api/asistencias$", api_asistencias_post),
-    ("DELETE", r"^/api/asistencias/(\d+)$", lambda con, q, b, i: api_asistencias_delete(con, int(i))),
-    ("GET", r"^/api/movimientos$", api_movimientos_list),
-    ("POST", r"^/api/movimientos$", api_movimientos_post),
-    ("PUT", r"^/api/movimientos/(\d+)$", lambda con, q, b, i: api_movimientos_put(con, int(i), b)),
-    ("DELETE", r"^/api/movimientos/(\d+)$", lambda con, q, b, i: api_movimientos_delete(con, int(i))),
+    ("GET", r"^/api/config$", api_config_get, None),
+    ("PUT", r"^/api/config$", api_config_put, "ajustes"),
+    ("GET", r"^/api/dashboard$", api_dashboard, None),
+    ("GET", r"^/api/actualizacion$", lambda con, q, b: consultar_actualizacion(q.get("forzar") == "1"), None),
+    ("GET", r"^/api/clientes$", api_clientes_list, ("clientes", "cobrar")),
+    ("POST", r"^/api/clientes$", api_clientes_post, "clientes"),
+    ("GET", r"^/api/clientes/(\d+)$", lambda con, q, b, i: api_cliente_get(con, int(i)), ("clientes", "cobrar")),
+    ("PUT", r"^/api/clientes/(\d+)$", lambda con, q, b, i: api_clientes_put(con, int(i), b), "clientes"),
+    ("DELETE", r"^/api/clientes/(\d+)$", lambda con, q, b, i: api_clientes_delete(con, int(i)), "clientes"),
+    ("GET", r"^/api/planes$", api_planes_list, None),
+    ("POST", r"^/api/planes$", api_planes_post, "planes"),
+    ("PUT", r"^/api/planes/(\d+)$", lambda con, q, b, i: api_planes_put(con, int(i), b), "planes"),
+    ("DELETE", r"^/api/planes/(\d+)$", lambda con, q, b, i: api_planes_delete(con, int(i)), "planes"),
+    ("POST", r"^/api/pagos$", api_pagos_post, "cobrar"),
+    ("DELETE", r"^/api/pagos/(\d+)$", lambda con, q, b, i: api_pagos_delete(con, int(i)), "cobrar"),
+    ("GET", r"^/api/asistencias$", api_asistencias_list, "asistencia"),
+    ("POST", r"^/api/asistencias$", api_asistencias_post, "asistencia"),
+    ("DELETE", r"^/api/asistencias/(\d+)$", lambda con, q, b, i: api_asistencias_delete(con, int(i)), "asistencia"),
+    ("GET", r"^/api/movimientos$", api_movimientos_list, "contabilidad"),
+    ("POST", r"^/api/movimientos$", api_movimientos_post, "contabilidad"),
+    ("PUT", r"^/api/movimientos/(\d+)$", lambda con, q, b, i: api_movimientos_put(con, int(i), b), "contabilidad"),
+    ("DELETE", r"^/api/movimientos/(\d+)$", lambda con, q, b, i: api_movimientos_delete(con, int(i)), "contabilidad"),
+    ("GET", r"^/api/usuarios$", api_usuarios_list, "usuarios"),
+    ("POST", r"^/api/usuarios$", api_usuarios_post, "usuarios"),
+    ("PUT", r"^/api/usuarios/(\d+)$", lambda con, q, b, i: api_usuarios_put(con, int(i), b), "usuarios"),
+    ("DELETE", r"^/api/usuarios/(\d+)$", lambda con, q, b, i: api_usuarios_delete(con, int(i)), "usuarios"),
 ]
 
 TIPOS = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
@@ -945,6 +1171,47 @@ class Manejador(BaseHTTPRequestHandler):
     def _descarga(self, nombre, datos, tipo):
         self._enviar(200, datos, tipo, {"Content-Disposition": 'attachment; filename="%s"' % nombre})
 
+    def _token_cookie(self):
+        try:
+            cookies = SimpleCookie(self.headers.get("Cookie", ""))
+            if "gymadmin_sesion" in cookies:
+                return cookies["gymadmin_sesion"].value
+        except Exception:
+            pass
+        return ""
+
+    def _cookie_sesion(self, token, borrar=False):
+        if borrar:
+            return "gymadmin_sesion=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0"
+        return "gymadmin_sesion=%s; HttpOnly; Path=/; SameSite=Lax; Max-Age=%d" % (token, DURACION_SESION_HORAS * 3600)
+
+    def _login(self, con, body):
+        usuario = re.sub(r"\s+", "", (body.get("usuario") or "")).lower()
+        fila = con.execute("SELECT * FROM usuarios WHERE lower(usuario) = ?", (usuario,)).fetchone()
+        if not fila or not fila["activo"] or not verificar_clave(body.get("clave") or "", fila["clave"]):
+            return self._json(401, {"error": "Usuario o contraseña incorrectos."})
+        token = crear_sesion(con, fila["id"])
+        cuerpo = json.dumps({"usuario": usuario_publico(fila)}, ensure_ascii=False).encode("utf-8")
+        return self._enviar(200, cuerpo, extra={"Set-Cookie": self._cookie_sesion(token)})
+
+    def _logout(self, con, token):
+        con.execute("DELETE FROM sesiones WHERE token = ?", (token,))
+        con.commit()
+        cuerpo = json.dumps({"ok": True}).encode("utf-8")
+        return self._enviar(200, cuerpo, extra={"Set-Cookie": self._cookie_sesion("", borrar=True)})
+
+    def _cambiar_clave(self, con, body):
+        u = usuario_actual()
+        fila = con.execute("SELECT * FROM usuarios WHERE id = ?", (u["id"],)).fetchone()
+        if not verificar_clave(body.get("actual") or "", fila["clave"]):
+            return self._json(400, {"error": "La contraseña actual no es correcta."})
+        nueva = body.get("nueva") or ""
+        if len(nueva) < 4:
+            return self._json(400, {"error": "La nueva contraseña debe tener al menos 4 caracteres."})
+        con.execute("UPDATE usuarios SET clave = ?, debe_cambiar = 0 WHERE id = ?", (hash_clave(nueva), u["id"]))
+        con.commit()
+        return self._json(200, {"ok": True})
+
     def _procesar(self, metodo):
         url = urlparse(self.path)
         ruta = url.path
@@ -953,6 +1220,7 @@ class Manejador(BaseHTTPRequestHandler):
             if metodo in ("GET", "HEAD"):
                 return self._archivo_estatico(ruta)
             return self._json(404, {"error": "No encontrado"})
+        _ctx.usuario = None
         try:
             body = {}
             largo = int(self.headers.get("Content-Length") or 0)
@@ -961,18 +1229,40 @@ class Manejador(BaseHTTPRequestHandler):
             with DB_LOCK:
                 con = conectar()
                 try:
+                    token = self._token_cookie()
+                    _ctx.usuario = usuario_publico(usuario_por_token(con, token))
+
+                    # --- Rutas públicas (no requieren sesión) ---
+                    if ruta == "/api/login" and metodo == "POST":
+                        return self._login(con, body)
+                    if ruta == "/api/sesion" and metodo == "GET":
+                        cfg = leer_config(con)
+                        return self._json(200, {"usuario": _ctx.usuario, "nombre_gimnasio": cfg.get("nombre_gimnasio"),
+                                                "version": VERSION})
+
+                    # --- A partir de acá hace falta tener sesión ---
+                    if _ctx.usuario is None:
+                        return self._json(401, {"error": "Tenés que iniciar sesión."})
+
+                    if ruta == "/api/logout" and metodo == "POST":
+                        return self._logout(con, token)
+                    if ruta == "/api/cambiar-clave" and metodo == "POST":
+                        return self._cambiar_clave(con, body)
                     if metodo == "POST" and ruta == "/api/salir":
                         self._json(200, {"ok": True})
                         print("GymAdmin: cerrado desde la aplicación.")
                         threading.Timer(0.4, lambda: os._exit(0)).start()
                         return
                     if metodo == "GET" and ruta == "/api/exportar/clientes.csv":
+                        exigir("clientes")
                         return self._descarga("clientes-%s.csv" % hoy().isoformat(), export_clientes(con, q),
                                               "text/csv; charset=utf-8")
                     if metodo == "GET" and ruta == "/api/exportar/movimientos.csv":
+                        exigir("contabilidad")
                         return self._descarga("movimientos-%s.csv" % hoy().isoformat(),
                                               export_movimientos(con, q), "text/csv; charset=utf-8")
                     if metodo == "GET" and ruta == "/api/copia-seguridad":
+                        exigir("ajustes")
                         tmp = os.path.join(DATA_DIR, "_descarga.db")
                         dst = sqlite3.connect(tmp)
                         con.backup(dst)
@@ -982,11 +1272,12 @@ class Manejador(BaseHTTPRequestHandler):
                         os.remove(tmp)
                         return self._descarga("gimnasio-copia-%s.db" % datetime.now().strftime("%Y%m%d-%H%M"),
                                               datos, "application/octet-stream")
-                    for m, patron, fn in RUTAS:
+                    for m, patron, fn, permiso in RUTAS:
                         if m != metodo:
                             continue
                         coincide = re.match(patron, ruta)
                         if coincide:
+                            exigir(permiso)
                             res = fn(con, q, body, *coincide.groups())
                             return self._json(200, res)
                     return self._json(404, {"error": "Ruta no encontrada"})
@@ -998,6 +1289,8 @@ class Manejador(BaseHTTPRequestHandler):
             import traceback
             traceback.print_exc()
             return self._json(500, {"error": "Error interno: %s" % e})
+        finally:
+            _ctx.usuario = None
 
     def do_GET(self):
         self._procesar("GET")
@@ -1029,7 +1322,7 @@ def puerto_libre(host, preferido):
 def ya_corriendo(puerto):
     """Devuelve True si en ese puerto ya responde una instancia de GymAdmin."""
     try:
-        req = Request("http://127.0.0.1:%d/api/config" % puerto, headers={"User-Agent": "GymAdmin"})
+        req = Request("http://127.0.0.1:%d/api/sesion" % puerto, headers={"User-Agent": "GymAdmin"})
         with urlopen(req, timeout=1.5) as r:
             data = json.loads(r.read().decode("utf-8"))
         return bool(data.get("version"))

@@ -19,18 +19,25 @@
     </div>
     <nav id="menu">
       <a href="#inicio" data-vista="inicio"><i data-i="inicio"></i>Inicio</a>
-      <a href="#asistencia" data-vista="asistencia"><i data-i="check"></i>Ingreso a sala</a>
-      <a href="#clientes" data-vista="clientes"><i data-i="clientes"></i>Clientes</a>
-      <a href="#contabilidad" data-vista="contabilidad"><i data-i="caja"></i>Contabilidad</a>
-      <a href="#planes" data-vista="planes"><i data-i="planes"></i>Planes y precios</a>
-      <a href="#ajustes" data-vista="ajustes"><i data-i="ajustes"></i>Ajustes</a>
+      <a href="#asistencia" data-vista="asistencia" data-perm="asistencia"><i data-i="check"></i>Ingreso a sala</a>
+      <a href="#clientes" data-vista="clientes" data-perm="clientes"><i data-i="clientes"></i>Clientes</a>
+      <a href="#contabilidad" data-vista="contabilidad" data-perm="contabilidad"><i data-i="caja"></i>Contabilidad</a>
+      <a href="#planes" data-vista="planes" data-perm="planes"><i data-i="planes"></i>Planes y precios</a>
+      <a href="#usuarios" data-vista="usuarios" data-perm="usuarios"><i data-i="usuarios"></i>Usuarios</a>
+      <a href="#ajustes" data-vista="ajustes" data-perm="ajustes"><i data-i="ajustes"></i>Ajustes</a>
     </nav>
-    <button class="btn btn-primario btn-bloque" id="btnCobrarMenu"><i data-i="mas"></i>Cobrar cuota</button>
+    <button class="btn btn-primario btn-bloque" id="btnCobrarMenu" data-perm="cobrar"><i data-i="mas"></i>Cobrar cuota</button>
     <a class="aviso-update" id="avisoUpdate" href="#" target="_blank" rel="noopener" hidden></a>
+    <div class="usuario-box" id="usuarioBox" hidden>
+      <div class="usuario-info"><span class="avatar" id="uAvatar"></span><div class="usuario-datos"><b id="uNombre"></b><small id="uRol"></small></div></div>
+      <div class="usuario-acc"><button class="btn btn-chico" id="btnCambiarClave">Cambiar clave</button><button class="btn btn-chico" id="btnLogout"><i data-i="salir"></i>Salir</button></div>
+    </div>
     <div class="sidebar-pie" id="fechaHoy"></div>
   </aside>
 
   <main class="contenido" id="contenido"></main>
+
+  <div class="auth" id="pantallaAuth" hidden></div>
 
   <div class="modal-fondo" id="modalFondo" hidden>
     <div class="modal" role="dialog" aria-modal="true" id="modal"></div>

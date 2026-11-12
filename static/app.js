@@ -32,6 +32,10 @@ const ICONOS = {
   alerta: '<path d="M12 3 2 20h20z"/><path d="M12 10v4M12 17v.5"/>',
   reloj: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   tendencia: '<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>',
+  usuarios: '<circle cx="9" cy="8" r="3.3"/><path d="M3 20c.5-3.3 3-5 6-5s5.5 1.7 6 5"/><path d="M16 4.5a3.3 3.3 0 0 1 0 6.4"/><path d="M18.5 20c-.2-2.3-1.2-3.9-2.8-4.8"/>',
+  salir: '<path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="M10 12H3"/><path d="m6 8-4 4 4 4"/>',
+  candado: '<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><circle cx="12" cy="15.5" r="1.4"/>',
+  escudo: '<path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/><path d="m9 12 2 2 4-4"/>',
 };
 const ico = (n, extra = "") => `<svg class="i ${extra}" viewBox="0 0 24 24" aria-hidden="true">${ICONOS[n] || ""}</svg>`;
 
@@ -41,6 +45,15 @@ const ESTADOS = { al_dia: "Al día", por_vencer: "Por vencer", vencida: "Vencida
 
 let CONFIG = { moneda: "$", nombre_gimnasio: "Mi Gimnasio", dias_aviso: 7, categorias_ingreso: [], categorias_egreso: [], medios_pago: [] };
 let PLANES = [];
+let USUARIO = null;
+
+const ETIQUETAS_PERMISOS = {
+  clientes: "Clientes", cobrar: "Cobrar cuotas", asistencia: "Ingreso a sala",
+  contabilidad: "Contabilidad", planes: "Planes y precios", ajustes: "Ajustes", usuarios: "Gestionar usuarios",
+};
+const PERMISOS_ORDEN = ["clientes", "cobrar", "asistencia", "contabilidad", "planes", "ajustes", "usuarios"];
+const PERM_VISTA = { asistencia: "asistencia", clientes: "clientes", contabilidad: "contabilidad", planes: "planes", usuarios: "usuarios", ajustes: "ajustes" };
+const puede = (perm) => !!USUARIO && (USUARIO.es_admin || (USUARIO.permisos || []).indexOf(perm) >= 0);
 
 const fmtNum = new Intl.NumberFormat("es-AR", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 const dinero = (v) => `${v < 0 ? "−" : ""}${CONFIG.moneda || "$"} ${fmtNum.format(Math.abs(v || 0))}`;
@@ -111,6 +124,12 @@ async function api(metodo, url, cuerpo) {
     throw new Error("No hay conexión con la aplicación. ¿Está abierta la ventana de GymAdmin?");
   }
   const datos = await r.json().catch(() => ({}));
+  if (r.status === 401 && USUARIO) {
+    // La sesión venció mientras se usaba la app
+    USUARIO = null;
+    mostrarLogin(true);
+    throw new Error(datos.error || "Tu sesión venció. Volvé a ingresar.");
+  }
   if (!r.ok) throw new Error(datos.error || `Error ${r.status}`);
   return datos;
 }
@@ -196,7 +215,15 @@ function irA(vista) {
   else render();
 }
 async function render() {
-  const vista = (location.hash || "#inicio").slice(1).split("?")[0] || "inicio";
+  if (!USUARIO) return;
+  let vista = (location.hash || "#inicio").slice(1).split("?")[0] || "inicio";
+  // Si no tiene permiso para esta sección, lo mandamos a Inicio
+  if (PERM_VISTA[vista] && !puede(PERM_VISTA[vista])) {
+    const cont0 = $("#contenido");
+    cont0.innerHTML = `<div class="tarjeta vacio" style="margin-top:40px">${ico("candado", "")}<b>No tenés acceso a esta sección</b>Si lo necesitás, pedíle al administrador que te dé el permiso.</div>`;
+    $$("#menu a").forEach((a) => a.classList.remove("activo"));
+    return;
+  }
   const fn = VISTAS[vista] || VISTAS.inicio;
   $$("#menu a").forEach((a) => a.classList.toggle("activo", a.dataset.vista === vista));
   const cont = $("#contenido");
@@ -279,42 +306,50 @@ function abreviar(v) {
 // ---------------------------------------------------------------------------
 VISTAS.inicio = async (cont) => {
   const d = await api("GET", "/api/dashboard");
-  const fila = (c, tipo) => {
+  const verDinero = !!d.ver_dinero;
+  const verClientes = puede("clientes") || puede("cobrar");
+  const fila = (c) => {
     const wa = linkWhatsapp(c.telefono, `Hola ${c.nombre}! Te escribimos de ${CONFIG.nombre_gimnasio}. ${c.estado === "por_vencer" ? `Te recordamos que tu cuota vence el ${fmtFecha(c.vencimiento)}.` : "Tu cuota se encuentra vencida. ¡Te esperamos para renovarla!"}`);
-    return `<li>${avatar(c)}<div class="quien" style="flex:1"><b data-ficha="${c.id}">${esc(nombreCompleto(c))}</b>
+    return `<li>${avatar(c)}<div class="quien" style="flex:1"><b ${verClientes ? `data-ficha="${c.id}"` : ""}>${esc(nombreCompleto(c))}</b>
       <span>${c.vencimiento ? textoDias(c.dias_restantes) + " · " + fmtFecha(c.vencimiento) : "nunca pagó"}${c.plan_nombre ? " · " + esc(c.plan_nombre) : ""}</span></div>
       ${wa ? `<a class="btn btn-chico btn-texto" href="${wa}" target="_blank" title="Avisar por WhatsApp">${ico("whatsapp")}</a>` : ""}
-      <button class="btn btn-chico" data-cobrar="${c.id}">Cobrar</button></li>`;
+      ${puede("cobrar") ? `<button class="btn btn-chico" data-cobrar="${c.id}">Cobrar</button>` : ""}</li>`;
   };
-  cont.innerHTML = `
-    <div class="encabezado"><div><h1>Hola 👋</h1><p>Así está ${esc(d.nombre_gimnasio)} hoy, ${fmtFechaLarga(d.hoy)}.</p></div></div>
-    <div class="accesos">
-      <button class="acceso destacado" data-accion="cobrar"><span class="burbuja">${ico("dinero")}</span><span>Cobrar cuota<small>Registrar un pago</small></span></button>
-      <button class="acceso" data-accion="asistencia"><span class="burbuja">${ico("check")}</span><span>Ingreso a sala<small>Controlar por DNI</small></span></button>
-      <button class="acceso" data-accion="cliente"><span class="burbuja">${ico("personaMas")}</span><span>Nuevo cliente<small>Dar de alta un socio</small></span></button>
-      <button class="acceso" data-accion="gasto"><span class="burbuja">${ico("gasto")}</span><span>Registrar gasto<small>Alquiler, sueldos, etc.</small></span></button>
-    </div>
-    <div class="grilla g-4">
-      <div class="tarjeta kpi"><div class="kpi-tit">${ico("clientes")}Socios activos</div><div class="kpi-valor">${d.activos}</div><div class="kpi-sub">${d.al_dia} con la cuota al día · ${d.nuevos_mes} nuevos este mes</div></div>
-      <div class="tarjeta kpi"><div class="kpi-tit">${ico("check")}Ingresos a sala hoy</div><div class="kpi-valor">${d.asistencias_hoy}</div><div class="kpi-sub">Cobrado hoy: ${dinero(d.ingresos_hoy)}</div></div>
-      <div class="tarjeta kpi"><div class="kpi-tit">${ico("ingreso")}Ingresos de ${MESES[new Date().getMonth()]}</div><div class="kpi-valor">${dinero(d.ingresos_mes)}</div><div class="kpi-sub">Gastos: ${dinero(d.egresos_mes)}</div></div>
-      <div class="tarjeta kpi ${d.resultado_mes >= 0 ? "verde" : "rojo"}"><div class="kpi-tit">${ico("tendencia")}Resultado del mes</div><div class="kpi-valor">${dinero(d.resultado_mes)}</div><div class="kpi-sub">Efectivo en caja: ${dinero(d.caja_efectivo)}</div></div>
-    </div>
-    <div class="grilla g-2 mt">
-      <div class="tarjeta"><div class="tarjeta-cab"><h2>Cuotas vencidas <span class="badge b-vencida">${d.cant_vencidas}</span></h2><a href="#clientes" data-filtro="vencida" class="btn btn-chico btn-texto">Ver todas</a></div>
+  const accesos = [];
+  if (puede("cobrar")) accesos.push(`<button class="acceso destacado" data-accion="cobrar"><span class="burbuja">${ico("dinero")}</span><span>Cobrar cuota<small>Registrar un pago</small></span></button>`);
+  if (puede("asistencia")) accesos.push(`<button class="acceso" data-accion="asistencia"><span class="burbuja">${ico("check")}</span><span>Ingreso a sala<small>Controlar por DNI</small></span></button>`);
+  if (puede("clientes")) accesos.push(`<button class="acceso" data-accion="cliente"><span class="burbuja">${ico("personaMas")}</span><span>Nuevo cliente<small>Dar de alta un socio</small></span></button>`);
+  if (puede("contabilidad")) accesos.push(`<button class="acceso" data-accion="gasto"><span class="burbuja">${ico("gasto")}</span><span>Registrar gasto<small>Alquiler, sueldos, etc.</small></span></button>`);
+
+  const kpis = [`<div class="tarjeta kpi"><div class="kpi-tit">${ico("clientes")}Socios activos</div><div class="kpi-valor">${d.activos}</div><div class="kpi-sub">${d.al_dia} con la cuota al día · ${d.nuevos_mes} nuevos este mes</div></div>`];
+  if (puede("asistencia")) kpis.push(`<div class="tarjeta kpi"><div class="kpi-tit">${ico("check")}Ingresos a sala hoy</div><div class="kpi-valor">${d.asistencias_hoy}</div>${verDinero ? `<div class="kpi-sub">Cobrado hoy: ${dinero(d.ingresos_hoy)}</div>` : ""}</div>`);
+  if (verDinero) {
+    kpis.push(`<div class="tarjeta kpi"><div class="kpi-tit">${ico("ingreso")}Ingresos de ${MESES[new Date().getMonth()]}</div><div class="kpi-valor">${dinero(d.ingresos_mes)}</div><div class="kpi-sub">Gastos: ${dinero(d.egresos_mes)}</div></div>`);
+    kpis.push(`<div class="tarjeta kpi ${d.resultado_mes >= 0 ? "verde" : "rojo"}"><div class="kpi-tit">${ico("tendencia")}Resultado del mes</div><div class="kpi-valor">${dinero(d.resultado_mes)}</div><div class="kpi-sub">Efectivo en caja: ${dinero(d.caja_efectivo)}</div></div>`);
+  }
+
+  const listaVenc = verClientes ? `<div class="grilla g-2 mt">
+      <div class="tarjeta"><div class="tarjeta-cab"><h2>Cuotas vencidas <span class="badge b-vencida">${d.cant_vencidas}</span></h2>${puede("clientes") ? `<a href="#clientes" data-filtro="vencida" class="btn btn-chico btn-texto">Ver todas</a>` : ""}</div>
         ${d.vencidas.length ? `<ul class="lista-mini">${d.vencidas.slice(0, 8).map((c) => fila(c)).join("")}</ul>` : `<div class="vacio"><b>¡Nadie debe!</b>Todos los socios activos tienen la cuota al día.</div>`}</div>
-      <div class="tarjeta"><div class="tarjeta-cab"><h2>Vencen en los próximos ${CONFIG.dias_aviso} días <span class="badge b-por_vencer">${d.cant_por_vencer}</span></h2><a href="#clientes" data-filtro="por_vencer" class="btn btn-chico btn-texto">Ver todas</a></div>
+      <div class="tarjeta"><div class="tarjeta-cab"><h2>Vencen en los próximos ${CONFIG.dias_aviso} días <span class="badge b-por_vencer">${d.cant_por_vencer}</span></h2>${puede("clientes") ? `<a href="#clientes" data-filtro="por_vencer" class="btn btn-chico btn-texto">Ver todas</a>` : ""}</div>
         ${d.por_vencer.length ? `<ul class="lista-mini">${d.por_vencer.slice(0, 8).map((c) => fila(c)).join("")}</ul>` : `<div class="vacio"><b>Sin vencimientos cercanos</b>No hay cuotas que venzan en los próximos días.</div>`}</div>
-    </div>
-    <div class="grilla g-2 mt">
-      <div class="tarjeta"><div class="tarjeta-cab"><h2>Ingresos y gastos (últimos 6 meses)</h2><a href="#contabilidad" class="btn btn-chico btn-texto">Contabilidad</a></div><div class="tarjeta-cuerpo">${graficoBarras(d.serie)}</div></div>
-      <div class="tarjeta"><div class="tarjeta-cab"><h2>Últimos ingresos a sala</h2><a href="#asistencia" class="btn btn-chico btn-texto">Registrar</a></div>
-        ${d.ultimas_asistencias.length ? `<ul class="lista-mini">${d.ultimas_asistencias.map((a) => `<li>${avatar(a)}<div class="quien" style="flex:1"><b data-ficha="${a.cliente_id}">${esc(nombreCompleto(a))}</b></div><span class="sec num">${esc(a.hora)}</span></li>`).join("")}</ul>` : `<div class="vacio"><b>Todavía nadie ingresó hoy</b>Registrá los ingresos desde “Ingreso a sala”.</div>`}</div>
-    </div>`;
-  cont.querySelector("[data-accion=cobrar]").onclick = () => formCobro();
-  cont.querySelector("[data-accion=asistencia]").onclick = () => irA("asistencia");
-  cont.querySelector("[data-accion=cliente]").onclick = () => formCliente();
-  cont.querySelector("[data-accion=gasto]").onclick = () => formMovimiento("egreso");
+    </div>` : "";
+
+  const abajo = [];
+  if (verDinero) abajo.push(`<div class="tarjeta"><div class="tarjeta-cab"><h2>Ingresos y gastos (últimos 6 meses)</h2><a href="#contabilidad" class="btn btn-chico btn-texto">Contabilidad</a></div><div class="tarjeta-cuerpo">${graficoBarras(d.serie)}</div></div>`);
+  if (puede("asistencia")) abajo.push(`<div class="tarjeta"><div class="tarjeta-cab"><h2>Últimos ingresos a sala</h2><a href="#asistencia" class="btn btn-chico btn-texto">Registrar</a></div>
+      ${d.ultimas_asistencias.length ? `<ul class="lista-mini">${d.ultimas_asistencias.map((a) => `<li>${avatar(a)}<div class="quien" style="flex:1"><b ${verClientes ? `data-ficha="${a.cliente_id}"` : ""}>${esc(nombreCompleto(a))}</b></div><span class="sec num">${esc(a.hora)}</span></li>`).join("")}</ul>` : `<div class="vacio"><b>Todavía nadie ingresó hoy</b>Registrá los ingresos desde “Ingreso a sala”.</div>`}</div>`);
+
+  cont.innerHTML = `
+    <div class="encabezado"><div><h1>Hola${USUARIO ? ", " + esc((USUARIO.nombre || "").split(" ")[0]) : ""} 👋</h1><p>Así está ${esc(d.nombre_gimnasio)} hoy, ${fmtFechaLarga(d.hoy)}.</p></div></div>
+    ${accesos.length ? `<div class="accesos">${accesos.join("")}</div>` : ""}
+    <div class="grilla g-4">${kpis.join("")}</div>
+    ${listaVenc}
+    ${abajo.length ? `<div class="grilla g-2 mt">${abajo.join("")}</div>` : ""}`;
+  const bCob = cont.querySelector("[data-accion=cobrar]"); if (bCob) bCob.onclick = () => formCobro();
+  const bAsi = cont.querySelector("[data-accion=asistencia]"); if (bAsi) bAsi.onclick = () => irA("asistencia");
+  const bCli = cont.querySelector("[data-accion=cliente]"); if (bCli) bCli.onclick = () => formCliente();
+  const bGas = cont.querySelector("[data-accion=gasto]"); if (bGas) bGas.onclick = () => formMovimiento("egreso");
   $$("[data-filtro]", cont).forEach((a) => a.addEventListener("click", () => { estadoClientes.filtro = a.dataset.filtro; }));
   enlazarComunes(cont);
 };
@@ -907,6 +942,101 @@ function formPlan(p = null) {
 }
 
 // ---------------------------------------------------------------------------
+// USUARIOS
+// ---------------------------------------------------------------------------
+VISTAS.usuarios = async (cont) => {
+  const lista = await api("GET", "/api/usuarios");
+  const resumenPermisos = (u) => {
+    if (u.es_admin) return "Acceso total";
+    if (!u.permisos.length) return "Sin permisos";
+    return PERMISOS_ORDEN.filter((p) => u.permisos.indexOf(p) >= 0).map((p) => ETIQUETAS_PERMISOS[p]).join(", ");
+  };
+  cont.innerHTML = `
+    <div class="encabezado"><div><h1>Usuarios</h1><p>Creá cuentas para el personal y elegí a qué partes del sistema entra cada uno.</p></div>
+      <div class="acciones"><button class="btn btn-primario" id="btnNuevoUsuario">${ico("personaMas")}Nuevo usuario</button></div></div>
+    <div class="tarjeta"><div class="tabla-cont"><table><thead><tr><th>Usuario</th><th>Rol</th><th>Acceso a</th><th>Estado</th><th></th></tr></thead><tbody>
+      ${lista.map((u) => `<tr>
+        <td><div style="display:flex;align-items:center;gap:10px">${avatar({ nombre: u.nombre })}<div><div class="nombre-cel">${esc(u.nombre)}</div><div class="sec">@${esc(u.usuario)}${USUARIO && u.id === USUARIO.id ? " · vos" : ""}</div></div></div></td>
+        <td>${u.es_admin ? `<span class="badge b-al_dia" style="background:var(--acento-suave);color:var(--acento-oscuro)">${ico("escudo")}Administrador</span>` : `<span class="badge b-sin_pago">Usuario</span>`}</td>
+        <td style="max-width:320px"><span class="sec">${esc(resumenPermisos(u))}</span></td>
+        <td>${u.activo ? `<span class="badge b-al_dia">Activo</span>` : `<span class="badge b-baja">Inactivo</span>`}</td>
+        <td class="der" style="white-space:nowrap">
+          <button class="btn btn-chico btn-texto" data-reset="${u.id}" title="Reiniciar contraseña">${ico("candado")}</button>
+          <button class="btn btn-chico btn-texto" data-ed="${u.id}" title="Editar">${ico("editar")}</button>
+          ${USUARIO && u.id === USUARIO.id ? "" : `<button class="btn btn-chico btn-texto" data-del="${u.id}" title="Eliminar">${ico("borrar")}</button>`}
+        </td></tr>`).join("")}
+    </tbody></table></div></div>
+    <div class="aviso-caja mt">El <b>administrador</b> tiene acceso a todo, incluida la gestión de usuarios. A los demás les marcás solo las secciones que pueden usar.</div>`;
+  const porId = (id) => lista.find((u) => u.id === +id);
+  $("#btnNuevoUsuario").onclick = () => formUsuario();
+  $$("[data-ed]", cont).forEach((b) => b.onclick = () => formUsuario(porId(b.dataset.ed)));
+  $$("[data-reset]", cont).forEach((b) => b.onclick = () => modalResetClave(porId(b.dataset.reset)));
+  $$("[data-del]", cont).forEach((b) => b.onclick = async () => {
+    const u = porId(b.dataset.del);
+    if (!(await confirmar("Eliminar usuario", `Se eliminará la cuenta de <b>${esc(u.nombre)}</b> (@${esc(u.usuario)}). Esta acción no se puede deshacer.`, "Eliminar"))) return;
+    try { await api("DELETE", `/api/usuarios/${u.id}`); toast("Usuario eliminado", "ok"); refrescar(); } catch (e) { toast(e.message, "error"); }
+  });
+};
+
+function formUsuario(u = null) {
+  const permisos = u ? u.permisos : [];
+  const checks = PERMISOS_ORDEN.map((p) => `<label class="perm-item"><input type="checkbox" name="perm_${p}" ${permisos.indexOf(p) >= 0 ? "checked" : ""}> ${esc(ETIQUETAS_PERMISOS[p])}</label>`).join("");
+  const m = abrirModal(`${cabModal(u ? "Editar usuario" : "Nuevo usuario")}
+    <form id="fUsuario"><div class="modal-cuerpo"><div class="form-grilla">
+      <div class="campo"><label class="req">Nombre y apellido</label><input type="text" name="nombre" value="${u ? esc(u.nombre) : ""}" required autofocus></div>
+      <div class="campo"><label class="req">Usuario (para ingresar)</label><input type="text" name="usuario" value="${u ? esc(u.usuario) : ""}" placeholder="ej.: recepcion" required></div>
+      <div class="campo"><label ${u ? "" : 'class="req"'}>Contraseña</label><input type="password" name="clave" autocomplete="new-password" ${u ? "" : "required"} placeholder="${u ? "Dejar en blanco para no cambiarla" : "Mínimo 4 caracteres"}"></div>
+      <div class="campo"><label>Rol</label><select name="rol" id="uRolSel"><option value="empleado" ${u && u.es_admin ? "" : "selected"}>Usuario (permisos a elección)</option><option value="admin" ${u && u.es_admin ? "selected" : ""}>Administrador (acceso total)</option></select></div>
+      <div class="campo ancho" id="permisosBox"><label>Puede acceder a</label><div class="permisos-grilla">${checks}</div><span class="ayuda" id="permAyuda"></span></div>
+      ${u ? `<div class="campo ancho"><label style="display:flex;gap:8px;align-items:center;font-weight:500"><input type="checkbox" name="activo" ${u.activo ? "checked" : ""}> Usuario activo (puede ingresar)</label></div>` : ""}
+      <div class="campo ancho"><label style="display:flex;gap:8px;align-items:center;font-weight:500"><input type="checkbox" name="debe_cambiar" ${u ? "" : "checked"}> Pedir que cambie la contraseña en el primer ingreso</label></div>
+    </div></div>
+    <div class="modal-pie"><button type="button" class="btn" data-cerrar>Cancelar</button><button type="submit" class="btn btn-primario">Guardar</button></div></form>`);
+  const sel = $("#uRolSel", m), box = $("#permisosBox", m);
+  const aplicarRol = () => {
+    const esAdmin = sel.value === "admin";
+    $$("input[type=checkbox]", box).forEach((c) => (c.disabled = esAdmin));
+    box.style.opacity = esAdmin ? ".5" : "1";
+    $("#permAyuda", m).textContent = esAdmin ? "El administrador accede a todo automáticamente." : "Marcá solo las secciones que este usuario puede usar.";
+  };
+  sel.onchange = aplicarRol; aplicarRol();
+  $("#fUsuario", m).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = leerForm(e.target);
+    const datos = { nombre: f.nombre, usuario: f.usuario, rol: f.rol, debe_cambiar: f.debe_cambiar,
+                    permisos: PERMISOS_ORDEN.filter((p) => f["perm_" + p]) };
+    if (f.clave) datos.clave = f.clave;
+    if (u) datos.activo = f.activo;
+    try {
+      if (u) await api("PUT", `/api/usuarios/${u.id}`, datos);
+      else await api("POST", "/api/usuarios", datos);
+      toast(u ? "Usuario guardado" : "Usuario creado", "ok");
+      cerrarModal();
+      refrescar();
+    } catch (err) { toast(err.message, "error"); }
+  });
+}
+
+function modalResetClave(u) {
+  const m = abrirModal(`${cabModal("Reiniciar contraseña")}
+    <form id="fReset"><div class="modal-cuerpo">
+      <p style="margin-top:0">Asigná una contraseña nueva para <b>${esc(u.nombre)}</b> (@${esc(u.usuario)}). Decísela a la persona; en su próximo ingreso se le va a pedir que la cambie.</p>
+      <div class="campo"><label class="req">Nueva contraseña</label><input type="password" name="clave" minlength="4" required autofocus></div>
+    </div>
+    <div class="modal-pie"><button type="button" class="btn" data-cerrar>Cancelar</button><button type="submit" class="btn btn-primario">Reiniciar</button></div></form>`);
+  $("#fReset", m).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = leerForm(e.target);
+    try {
+      await api("PUT", `/api/usuarios/${u.id}`, { nombre: u.nombre, usuario: u.usuario, rol: u.rol,
+        permisos: u.permisos, activo: u.activo, clave: f.clave, debe_cambiar: true });
+      toast("Contraseña reiniciada", "ok");
+      cerrarModal();
+    } catch (err) { toast(err.message, "error"); }
+  });
+}
+
+// ---------------------------------------------------------------------------
 // AJUSTES
 // ---------------------------------------------------------------------------
 VISTAS.ajustes = async (cont) => {
@@ -968,19 +1098,158 @@ VISTAS.ajustes = async (cont) => {
 };
 
 // ---------------------------------------------------------------------------
-// Arranque
+// Sesión: login, menú según permisos, cerrar sesión y cambio de clave
 // ---------------------------------------------------------------------------
-(async function iniciar() {
-  $$("[data-i]").forEach((el) => (el.outerHTML = ico(el.dataset.i)));
-  $("#btnCobrarMenu").onclick = () => formCobro();
-  const f = new Date();
-  $("#fechaHoy").textContent = f.toLocaleDateString("es-AR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+function aplicarPermisosMenu() {
+  $$("#menu a[data-perm]").forEach((a) => (a.hidden = !puede(a.dataset.perm)));
+  const cobrar = $("#btnCobrarMenu");
+  if (cobrar) cobrar.hidden = !puede("cobrar");
+}
+
+function pintarUsuarioBox() {
+  const box = $("#usuarioBox");
+  if (!USUARIO) { box.hidden = true; return; }
+  box.hidden = false;
+  $("#uAvatar").textContent = (USUARIO.nombre || USUARIO.usuario || "?").trim()[0].toUpperCase();
+  $("#uAvatar").style.setProperty("--c", colorAvatar({ nombre: USUARIO.nombre || USUARIO.usuario }));
+  $("#uNombre").textContent = USUARIO.nombre || USUARIO.usuario;
+  $("#uRol").textContent = USUARIO.es_admin ? "Administrador" : "Usuario";
+}
+
+function cerrarSesionUI() {
+  $("#pantallaAuth").hidden = false;
+  document.body.classList.add("sin-sesion");
+}
+
+function mostrarLogin(sesionVencida) {
+  USUARIO = null;
+  pintarUsuarioBox();
+  cerrarSesionUI();
+  const nombreGim = CONFIG.nombre_gimnasio || "GymAdmin";
+  const auth = $("#pantallaAuth");
+  auth.innerHTML = `<form class="auth-tarjeta" id="fLogin">
+      <div class="auth-marca"><img src="icono.svg" alt=""><div><b>${esc(nombreGim)}</b><span>GymAdmin</span></div></div>
+      <h1>Iniciar sesión</h1><p class="sub">Ingresá con tu usuario y contraseña.</p>
+      ${sesionVencida ? `<div class="auth-error">Tu sesión se cerró por inactividad. Ingresá de nuevo.</div>` : ``}
+      <div id="loginError"></div>
+      <div class="campo"><label>Usuario</label><input type="text" name="usuario" autocomplete="username" autofocus required></div>
+      <div class="campo"><label>Contraseña</label><input type="password" name="clave" autocomplete="current-password" required></div>
+      <button class="btn btn-primario btn-bloque" type="submit">Ingresar</button>
+      <div class="auth-pie">GymAdmin ${esc(CONFIG.version || "")}</div>
+    </form>`;
+  const form = $("#fLogin");
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = $("button", form); btn.disabled = true; btn.textContent = "Ingresando…";
+    try {
+      const r = await api("POST", "/api/login", leerForm(form));
+      $("#loginError").innerHTML = "";
+      await entrar(r.usuario);
+    } catch (err) {
+      $("#loginError").innerHTML = `<div class="auth-error">${esc(err.message)}</div>`;
+      btn.disabled = false; btn.textContent = "Ingresar";
+      $("input[name=clave]", form).value = "";
+      $("input[name=clave]", form).focus();
+    }
+  });
+  setTimeout(() => { const i = $("input[name=usuario]", auth); if (i) i.focus(); }, 40);
+}
+
+// Entra a la app con el usuario ya autenticado
+async function entrar(usuario) {
+  USUARIO = usuario;
+  if (usuario.debe_cambiar) return pantallaCambioObligatorio();
+  $("#pantallaAuth").hidden = true;
+  $("#pantallaAuth").innerHTML = "";
+  document.body.classList.remove("sin-sesion");
   try {
     await cargarBase();
   } catch (e) {
     $("#contenido").innerHTML = `<div class="tarjeta vacio"><b>No se pudo conectar</b>${esc(e.message)}</div>`;
     return;
   }
+  pintarUsuarioBox();
+  aplicarPermisosMenu();
+  // Si la sección actual no corresponde, ir a Inicio
+  const vista = (location.hash || "#inicio").slice(1).split("?")[0] || "inicio";
+  if (PERM_VISTA[vista] && !puede(PERM_VISTA[vista])) location.hash = "inicio";
   render();
   comprobarActualizacion();
+}
+
+function pantallaCambioObligatorio() {
+  cerrarSesionUI();
+  const auth = $("#pantallaAuth");
+  auth.innerHTML = `<form class="auth-tarjeta" id="fCambioObl">
+      <div class="auth-marca"><img src="icono.svg" alt=""><div><b>Cambiá tu contraseña</b><span>Por seguridad</span></div></div>
+      <p class="sub">Es tu primer ingreso (o un administrador reinició tu clave). Elegí una contraseña nueva para continuar.</p>
+      <div id="cambioError"></div>
+      <div class="campo"><label>Contraseña actual</label><input type="password" name="actual" autocomplete="current-password" required></div>
+      <div class="campo"><label>Contraseña nueva</label><input type="password" name="nueva" autocomplete="new-password" required minlength="4"></div>
+      <div class="campo"><label>Repetir contraseña nueva</label><input type="password" name="nueva2" required></div>
+      <button class="btn btn-primario btn-bloque" type="submit">Guardar y continuar</button>
+    </form>`;
+  $("#fCambioObl").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const d = leerForm(e.target);
+    if (d.nueva !== d.nueva2) return ($("#cambioError").innerHTML = `<div class="auth-error">Las contraseñas nuevas no coinciden.</div>`);
+    try {
+      await api("POST", "/api/cambiar-clave", { actual: d.actual, nueva: d.nueva });
+      USUARIO.debe_cambiar = false;
+      toast("Contraseña actualizada", "ok");
+      await entrar(USUARIO);
+    } catch (err) { $("#cambioError").innerHTML = `<div class="auth-error">${esc(err.message)}</div>`; }
+  });
+  setTimeout(() => $("input[name=actual]", auth).focus(), 40);
+}
+
+function modalCambiarClave() {
+  const m = abrirModal(`${cabModal("Cambiar mi contraseña")}
+    <form id="fMiClave"><div class="modal-cuerpo"><div class="form-grilla">
+      <div class="campo ancho"><label class="req">Contraseña actual</label><input type="password" name="actual" autocomplete="current-password" required autofocus></div>
+      <div class="campo"><label class="req">Nueva contraseña</label><input type="password" name="nueva" minlength="4" required></div>
+      <div class="campo"><label class="req">Repetir nueva</label><input type="password" name="nueva2" required></div>
+    </div></div>
+    <div class="modal-pie"><button type="button" class="btn" data-cerrar>Cancelar</button><button type="submit" class="btn btn-primario">Guardar</button></div></form>`);
+  $("#fMiClave", m).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const d = leerForm(e.target);
+    if (d.nueva !== d.nueva2) return toast("Las contraseñas nuevas no coinciden", "error");
+    try {
+      await api("POST", "/api/cambiar-clave", { actual: d.actual, nueva: d.nueva });
+      toast("Contraseña actualizada", "ok");
+      cerrarModal();
+    } catch (err) { toast(err.message, "error"); }
+  });
+}
+
+async function cerrarSesion() {
+  try { await api("POST", "/api/logout"); } catch (e) {}
+  USUARIO = null;
+  mostrarLogin(false);
+}
+
+// ---------------------------------------------------------------------------
+// Arranque
+// ---------------------------------------------------------------------------
+(async function iniciar() {
+  $$("[data-i]").forEach((el) => (el.outerHTML = ico(el.dataset.i)));
+  $("#btnCobrarMenu").onclick = () => formCobro();
+  $("#btnLogout").onclick = cerrarSesion;
+  $("#btnCambiarClave").onclick = modalCambiarClave;
+  const f = new Date();
+  $("#fechaHoy").textContent = f.toLocaleDateString("es-AR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  let sesion;
+  try {
+    sesion = await api("GET", "/api/sesion");
+  } catch (e) {
+    document.body.classList.remove("sin-sesion");
+    $("#contenido").innerHTML = `<div class="tarjeta vacio"><b>No se pudo conectar</b>${esc(e.message)}</div>`;
+    return;
+  }
+  CONFIG.nombre_gimnasio = sesion.nombre_gimnasio || CONFIG.nombre_gimnasio;
+  CONFIG.version = sesion.version;
+  $("#nombreGimnasio").textContent = CONFIG.nombre_gimnasio;
+  if (sesion.usuario) await entrar(sesion.usuario);
+  else mostrarLogin(false);
 })();

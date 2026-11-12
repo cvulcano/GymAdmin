@@ -1,3 +1,38 @@
+/* El atributo hidden siempre oculta, aunque la clase defina otro display */
+[hidden] { display: none !important; }
+
+/* ---------- Login / sesión ---------- */
+body.sin-sesion .sidebar, body.sin-sesion .contenido { display: none; }
+.auth { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; background: radial-gradient(1200px 600px at 50% -10%, #20222A, #17181C 70%); z-index: 60; }
+.auth[hidden], .aviso-update[hidden] { display: none; }
+.auth-tarjeta { background: var(--superficie); border-radius: 16px; box-shadow: 0 24px 70px rgba(0,0,0,.4); width: 100%; max-width: 380px; padding: 30px 28px; }
+.auth-marca { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+.auth-marca img { width: 44px; height: 44px; }
+.auth-marca b { font-size: 18px; display: block; }
+.auth-marca span { color: var(--texto-3); font-size: 13px; }
+.auth h1 { font-size: 20px; margin: 0 0 4px; }
+.auth p.sub { margin: 0 0 20px; color: var(--texto-2); font-size: 14px; }
+.auth .campo { margin-bottom: 14px; }
+.auth .btn-bloque { margin-top: 6px; padding: 12px; font-size: 15px; }
+.auth-error { background: var(--peligro-suave); color: var(--peligro); padding: 10px 12px; border-radius: 8px; font-size: 13.5px; margin-bottom: 14px; }
+.auth-pie { margin-top: 18px; text-align: center; color: var(--texto-3); font-size: 12px; }
+
+/* Grilla de permisos (form de usuario) */
+.permisos-grilla { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; margin-top: 2px; }
+.perm-item { display: flex; align-items: center; gap: 8px; font-weight: 500; font-size: 14px; padding: 7px 10px; border: 1px solid var(--borde); border-radius: 8px; cursor: pointer; }
+.perm-item input { width: auto; min-height: 0; }
+@media (max-width: 560px) { .permisos-grilla { grid-template-columns: minmax(0, 1fr); } }
+
+/* Recuadro de usuario en la barra lateral */
+.usuario-box { margin-top: 14px; padding-top: 14px; border-top: 1px solid #2C2E35; }
+.usuario-info { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.usuario-datos { min-width: 0; }
+.usuario-datos b { display: block; font-size: 13.5px; color: #EDECE8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.usuario-datos small { color: #9A9CA4; font-size: 12px; }
+.usuario-acc { display: flex; gap: 6px; }
+.usuario-acc .btn { flex: 1; background: #2B2D34; border-color: #3A3D45; color: #D8D6D1; }
+.usuario-acc .btn:hover { background: #343640; color: #fff; }
+
 :root {
   --fondo: #F4F2EE;
   --superficie: #FFFFFF;

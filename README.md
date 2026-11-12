@@ -72,6 +72,27 @@ Si hacés doble clic en el ícono cuando la app ya está abierta, solo se abre e
 Para **actualizar** a una versión nueva: descargá el `GymAdmin.exe` nuevo y volvé a correr el instalador
 (o simplemente reemplazá el `GymAdmin.exe` en la carpeta de instalación). Los datos no se tocan.
 
+## Usuarios y permisos
+
+La app pide **usuario y contraseña** al abrir. Hay dos tipos de cuenta:
+
+- **Administrador:** acceso total, incluida la gestión de usuarios.
+- **Usuario:** entra solo a las secciones que el administrador le habilite
+  (Clientes, Cobrar cuotas, Ingreso a sala, Contabilidad, Planes, Ajustes).
+
+**Primer ingreso / al actualizar desde una versión sin usuarios:** se crea un
+administrador inicial con usuario **`admin`** y contraseña **`admin`**. En el
+primer ingreso la app obliga a cambiar esa contraseña. Desde **Usuarios** se
+crean las demás cuentas y se marcan sus permisos. Cada permiso se controla
+también en el servidor, no solo ocultando botones.
+
+Si un usuario olvida su contraseña, un administrador la reinicia desde
+**Usuarios** (botón del candado) y le avisa la nueva; esa persona la cambia al
+ingresar.
+
+> En red local (`--red`), usuario y contraseña viajan dentro de la red del
+> gimnasio. Para el uso habitual alcanza; evitá usarlo sobre redes abiertas.
+
 ## Cerrar la aplicación
 
 El ejecutable de Windows corre **sin ventana de consola**. Para cerrarlo, entrá a
