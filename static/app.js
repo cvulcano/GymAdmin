@@ -93,6 +93,60 @@ function textoDias(n) {
   if (n === -1) return "venció ayer";
   return `venció hace ${-n} días`;
 }
+// ---- Campos de fecha compatibles con cualquier navegador ----
+// Los navegadores modernos muestran el calendario nativo (type=date). Los viejos
+// (ej.: Edge antiguo del gimnasio) no lo soportan: ahí usamos una caja de texto
+// donde se escribe dd/mm/aaaa y la convertimos al formato que guarda la app.
+const SOPORTA_FECHA = (function () {
+  try {
+    if (window.__forzarTextoFecha) return false;
+    const i = document.createElement("input");
+    i.setAttribute("type", "date");
+    i.value = "no-es-fecha";
+    return i.value !== "no-es-fecha";
+  } catch (e) { return false; }
+})();
+function isoALocal(iso) {
+  if (!iso) return "";
+  const p = String(iso).slice(0, 10).split("-");
+  return p.length === 3 ? `${p[2]}/${p[1]}/${p[0]}` : "";
+}
+function localAIso(s) {
+  s = String(s || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+  if (!m) return "";
+  let [, d, mo, a] = m;
+  if (a.length === 2) a = "20" + a;
+  d = d.padStart(2, "0"); mo = mo.padStart(2, "0");
+  if (+d < 1 || +d > 31 || +mo < 1 || +mo > 12) return "";
+  const iso = `${a}-${mo}-${d}`;
+  const dt = deISO(iso);
+  return (dt && dt.getDate() === +d && dt.getMonth() === +mo - 1) ? iso : "";
+}
+// Devuelve el valor de un input de fecha en formato ISO, soporte nativo o no.
+function fechaDe(el) {
+  if (!el) return "";
+  return SOPORTA_FECHA ? el.value : localAIso(el.value);
+}
+// Convierte los inputs type=date a cajas de texto en navegadores sin soporte.
+function mejorarFechas(root) {
+  if (SOPORTA_FECHA) return;
+  $$("input[type=date]", root).forEach((inp) => {
+    if (inp.dataset.fecha) return;
+    inp.dataset.fecha = "1";
+    inp.type = "text";
+    inp.setAttribute("inputmode", "numeric");
+    inp.setAttribute("autocomplete", "off");
+    inp.placeholder = "dd/mm/aaaa";
+    inp.maxLength = 10;
+    if (inp.value) inp.value = isoALocal(inp.value);
+    const marcar = () => inp.classList.toggle("fecha-mala", !!inp.value.trim() && !localAIso(inp.value));
+    inp.addEventListener("input", marcar);
+    inp.addEventListener("blur", () => { const iso = localAIso(inp.value); if (iso) inp.value = isoALocal(iso); marcar(); });
+  });
+}
+
 const nombreCompleto = (c) => `${c.nombre || ""} ${c.apellido || ""}`.trim();
 const iniciales = (c) => ((c.nombre || "?")[0] + ((c.apellido || "")[0] || "")).toUpperCase();
 const COLORES_AV = ["#E8572A", "#2E6BC6", "#1F8A5B", "#8A4FBF", "#B7791F", "#C8372D", "#1C8C99", "#5C6270"];
@@ -164,6 +218,7 @@ function abrirModal(html, { ancho = false, alCerrar = null } = {}) {
   m.innerHTML = html;
   $("#modalFondo").hidden = false;
   alCerrarModal = alCerrar;
+  mejorarFechas(m);
   $$("[data-cerrar]", m).forEach((b) => b.addEventListener("click", cerrarModal));
   const primero = $("[autofocus]", m) || $("input, select, textarea", m);
   if (primero) setTimeout(() => primero.focus(), 30);
@@ -203,7 +258,9 @@ function confirmar(titulo, mensaje, textoBoton = "Confirmar", peligro = true) {
 function leerForm(form) {
   const d = {};
   $$("input[name], select[name], textarea[name]", form).forEach((el) => {
-    d[el.name] = el.type === "checkbox" ? el.checked : el.value;
+    if (el.type === "checkbox") d[el.name] = el.checked;
+    else if (el.dataset.fecha) d[el.name] = localAIso(el.value);  // caja de texto dd/mm/aaaa -> ISO
+    else d[el.name] = el.value;
   });
   return d;
 }
@@ -231,6 +288,7 @@ async function render() {
   const cont = $("#contenido");
   try {
     await fn(cont);
+    mejorarFechas(cont);
   } catch (e) {
     cont.innerHTML = `<div class="tarjeta vacio"><b>No se pudo cargar esta sección</b>${esc(e.message)}</div>`;
   }
@@ -698,7 +756,7 @@ async function formCobro(clienteId = null) {
     const res = $("#cbResumen", m);
     if (!p) { res.innerHTML = `<span>No hay planes activos. Creá uno en “Planes y precios”.</span>`; return; }
     const per = Math.max(1, +$("#cbPer", m).value || 1);
-    const fecha = $("#cbFecha", m).value || hoyISO();
+    const fecha = fechaDe($("#cbFecha", m)) || hoyISO();
     let desde = fecha;
     if (cliente && cliente.vencimiento && cliente.vencimiento >= fecha) desde = sumarDias(cliente.vencimiento, 1);
     const hasta = sumarDias(desde, p.duracion_dias * per - 1);
@@ -712,6 +770,7 @@ async function formCobro(clienteId = null) {
   $("#cbPer", m).addEventListener("input", ponerPrecio);
   $("#cbMonto", m).addEventListener("input", actualizar);
   $("#cbFecha", m).addEventListener("change", actualizar);
+  $("#cbFecha", m).addEventListener("input", actualizar);
   pintarCliente();
   ponerPrecio();
 
@@ -814,7 +873,7 @@ VISTAS.contabilidad = async (cont) => {
   $("#btnEgr").onclick = () => formMovimiento("egreso");
   $$("#periodos .chip").forEach((ch) => ch.onclick = () => { estadoConta.periodo = ch.dataset.v; refrescar(); });
   if ($("#cDesde")) {
-    const cambio = () => { estadoConta.desde = $("#cDesde").value; estadoConta.hasta = $("#cHasta").value; if (estadoConta.desde && estadoConta.hasta) refrescar(); };
+    const cambio = () => { estadoConta.desde = fechaDe($("#cDesde")); estadoConta.hasta = fechaDe($("#cHasta")); if (estadoConta.desde && estadoConta.hasta) refrescar(); };
     $("#cDesde").onchange = cambio; $("#cHasta").onchange = cambio;
   }
   $("#fTipo").onchange = (e) => { estadoConta.tipo = e.target.value; refrescar(); };
